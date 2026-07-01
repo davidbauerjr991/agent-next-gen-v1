@@ -13,7 +13,7 @@ import {
   type AppMenuGroup,
 } from "@nicecxone/lyra-ui";
 
-type Page = "agent-workspace" | "agent" | "outbound";
+type Page = "agent-workspace" | "agent" | "outbound" | "login";
 
 interface HeaderProps {
   onNavigate?: (page: Page) => void;
@@ -36,6 +36,7 @@ export function Header({ onNavigate, currentPage = "agent-workspace" }: HeaderPr
         { label: "Agent Next Gen", onClick: () => navigate("agent") },
         { label: "Agent Workspace Premium", active: currentPage === "agent-workspace", onClick: () => navigate("agent-workspace") },
         { label: "Outbound Engagement", active: currentPage === "outbound", onClick: () => navigate("outbound") },
+        { label: "Login", active: currentPage === "login", onClick: () => navigate("login") },
       ],
     },
   ];

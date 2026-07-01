@@ -4,20 +4,23 @@ import { Sidebar } from "@/components/Sidebar";
 import { DesktopDesignsPage } from "@/components/DesktopDesignsPage";
 import { AgentNextGenPage } from "@/components/AgentNextGenPage";
 import { OutboundEngagementPage } from "@/components/OutboundEngagementPage";
+import { LoginPage } from "@/components/LoginPage";
 
-type Page = "agent-workspace" | "agent" | "outbound";
+type Page = "agent-workspace" | "agent" | "outbound" | "login";
 
 /* ── Hash-based routing ── */
 const PAGE_HASH: Record<Page, string> = {
   "agent":           "",
   "agent-workspace": "#/agentworkspacepremium",
   "outbound":        "#/outboundengagement",
+  "login":           "#/login",
 };
 
 function pageFromHash(): Page {
   const hash = window.location.hash;
   if (hash === "#/agentworkspacepremium") return "agent-workspace";
   if (hash === "#/outboundengagement") return "outbound";
+  if (hash === "#/login") return "login";
   return "agent";
 }
 
@@ -220,6 +223,10 @@ function App() {
 
   if (page === "agent") {
     return <AgentNextGenPage showPageHeader showPanelToggle showInteriorPanel onNavigate={setPage} />;
+  }
+
+  if (page === "login") {
+    return <LoginPage onNavigate={setPage} />;
   }
 
   return (

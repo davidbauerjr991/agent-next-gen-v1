@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import * as PopoverPrimitive from "@radix-ui/react-popover";
+import { cn } from "@/lib/utils";
 import {
   AppHeader,
   AppName,
@@ -16,7 +17,25 @@ import {
   Input,
   LeftNav,
   AddChannel,
+  Tag,
+  Accordion,
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+  SortableTableHead,
+  Icon,
+  Divider,
+  Popover,
+  RadioGroup,
+  RadioGroupItem,
+  DateRangePicker,
+  filterChipVariants,
   type NavItem,
+  type SortDirection,
+  type DateRange,
   type AddChannelItem,
   type AgentStatus,
   type AppMenuGroup,
@@ -35,6 +54,17 @@ import {
   Mail,
   MessageSquare,
   MessageCircle,
+  Clock,
+  ArrowDown,
+  ArrowUp,
+  MoreVertical,
+  TrendingUp,
+  CheckCircle2,
+  CircleDot,
+  MinusCircle,
+  Gauge,
+  ChevronDown,
+  type LucideIcon,
 } from "lucide-react";
 
 /* ── App menu builder (needs onNavigate so built inside the component) ── */
@@ -46,6 +76,7 @@ function buildAppMenuGroups(onNavigate?: (page: Page) => void): AppMenuGroup[] {
         { label: "Agent Next Gen", active: true },
         { label: "Agent Workspace Premium", onClick: () => onNavigate?.("agent-workspace") },
         { label: "Outbound Engagement", onClick: () => onNavigate?.("outbound") },
+        { label: "Login", onClick: () => onNavigate?.("login") },
       ],
     },
   ];
@@ -97,6 +128,342 @@ const INITIAL_NOTIFICATIONS: AgentNotification[] = [
   { id: "6", type: "missed-call", title: "Missed Call", subtitle: "David Brown",   timestamp: "1h ago",  read: true  },
 ];
 
+/* ── Sample latest contacts ── */
+
+interface ContactInteraction {
+  id: string;
+  direction: "inbound" | "outbound";
+  channel: "email" | "chat";
+  timestamp: string;
+  agent: string;
+  status: "Closed";
+  queue: string;
+  skill: string;
+}
+
+interface LatestContact {
+  id: string;
+  name: string;
+  status: "open" | "pending" | "closed";
+  description: string;
+  channel: string;
+  wait: string;
+  caseId: string;
+  interactions: ContactInteraction[];
+}
+
+/* Sample interaction-history rows, cycled per contact so each accordion's
+   interior table has a few realistic-looking prior interactions */
+const INTERACTION_AGENTS = ["Kevin Jensen", "Andres Arenas", "KrishnaCharan Mohanrao", "Srinivas Swargam", "Erwin de Vera", "Tim O'Connor", "Josh Robertson"];
+const INTERACTION_SOURCES: { channel: ContactInteraction["channel"]; queue: string; skill: string }[] = [
+  { channel: "email", queue: "CXi SME Email", skill: "Email_General" },
+  { channel: "chat",  queue: "Chat_General",  skill: "Chat_General" },
+];
+
+function buildInteractions(seed: number): ContactInteraction[] {
+  return Array.from({ length: 3 }, (_, i) => {
+    const source = INTERACTION_SOURCES[(seed + i) % INTERACTION_SOURCES.length];
+    const day = 5 + ((seed + i) % 4);
+    const hour24 = 11 + ((seed * 2 + i * 3) % 8);
+    const minute = (seed * 7 + i * 13) % 60;
+    const isPM = hour24 >= 12;
+    const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+    return {
+      id: `${seed}-${i}`,
+      direction: i % 2 === 0 ? "inbound" : "outbound",
+      channel: source.channel,
+      timestamp: `09/0${day}/25 ${hour12}:${String(minute).padStart(2, "0")} ${isPM ? "PM" : "AM"}`,
+      agent: INTERACTION_AGENTS[(seed + i) % INTERACTION_AGENTS.length],
+      status: "Closed",
+      queue: source.queue,
+      skill: source.skill,
+    };
+  });
+}
+
+const LATEST_CONTACTS: LatestContact[] = [
+  { id: "1", name: "Lily Chen",          status: "open", description: "Unaccompanied minor (age 11) stuck at ORD — connecting flight canceled",              channel: "Atlas",        wait: "1m",  caseId: "CST-21009", interactions: buildInteractions(1) },
+  { id: "2", name: "Amara Okafor",       status: "open", description: "Pregnant traveler (32 weeks) — needs medical clearance and accommodation",             channel: "Atlas",        wait: "3m",  caseId: "CST-21016", interactions: buildInteractions(2) },
+  { id: "3", name: "Priya Sharma-Patel", status: "open", description: "Pediatric nurse — must reach children's hospital for emergency shift coverage",        channel: "Atlas",        wait: "2m",  caseId: "CST-21028", interactions: buildInteractions(3) },
+  { id: "4", name: "Alex Sanderson",     status: "open", description: "Mechanical delay on VY-4450 — LHR→FCO connection at risk, partner upgrade exceeds auth threshold", channel: "Emily", wait: "3m",  caseId: "CST-15001", interactions: buildInteractions(4) },
+  { id: "5", name: "Rachel Nguyen",      status: "open", description: "Family of 4 with infant — connecting flight MSP→ORD canceled",                         channel: "Atlas",        wait: "12m", caseId: "CST-21001", interactions: buildInteractions(5) },
+  { id: "6", name: "Richard Takahashi",  status: "open", description: "Executive missing board meeting in NYC — needs earliest possible rebooking",           channel: "Rebooking Bot", wait: "6m",  caseId: "CST-21004", interactions: buildInteractions(6) },
+  { id: "7", name: "Fatima Al-Rashidi",  status: "open", description: "Business traveler — critical client presentation in Dallas tomorrow",                  channel: "Rebooking Bot", wait: "15m", caseId: "CST-21012", interactions: buildInteractions(7) },
+];
+
+/* ── Home screen summary cards ── */
+
+interface SummaryCard {
+  id: string;
+  title: string;
+  icon: LucideIcon;
+  iconBackground: "active" | "success" | "info";
+  showDateFilter?: boolean;
+  rows: { label: string; value: string; valueClassName?: string }[];
+  footerLabel: string;
+  footerPrimary: string;
+  footerSecondary?: string;
+  footerSecondaryClassName?: string;
+}
+
+const SUMMARY_CARDS: SummaryCard[] = [
+  {
+    id: "schedule",
+    title: "Schedule",
+    icon: CalendarDays,
+    iconBackground: "active",
+    rows: [
+      { label: "Total Events", value: "6" },
+      { label: "Callbacks", value: "3", valueClassName: "text-lyra-status-warning-strong" },
+    ],
+    footerLabel: "Next up:",
+    footerPrimary: "Customer Callback",
+    footerSecondary: "09:00 AM",
+  },
+  {
+    id: "performance",
+    title: "Performance",
+    icon: TrendingUp,
+    iconBackground: "success",
+    showDateFilter: true,
+    rows: [
+      { label: "Cases Resolved", value: "12" },
+      { label: "CSAT Score", value: "4.8", valueClassName: "text-lyra-status-success-strong" },
+    ],
+    footerLabel: "Handle Time:",
+    footerPrimary: "8m 32s",
+    footerSecondary: "15% improvement",
+    footerSecondaryClassName: "text-lyra-status-success-strong",
+  },
+];
+
+/* ── Productivity breakdown card (agent state duration bars + date filter chip) ──
+   Replaces the third summary card slot — same Container/header styling as the
+   Schedule/Performance stat cards (no Table), with a FilterChip (search + Select
+   All + checkbox options) for the date filter in the header. Each agent state
+   (Available/Working/Unavailable) shows the agent's own duration bar + time,
+   plus a lighter "Team" comparison bar + time beneath it. */
+
+interface ProductivityStatusRow {
+  id: string;
+  label: string;
+  icon: LucideIcon;
+  iconColorClassName: string;
+  percent: number;
+  teamPercent: number;
+  time: string;
+  teamTime: string;
+}
+
+const PRODUCTIVITY_STATUS_ROWS: ProductivityStatusRow[] = [
+  {
+    id: "available",
+    label: "Available",
+    icon: CheckCircle2,
+    iconColorClassName: "text-lyra-status-success-strong",
+    percent: 0,
+    teamPercent: 0,
+    time: "00:00:00",
+    teamTime: "00:00:00",
+  },
+  {
+    id: "working",
+    label: "Working",
+    icon: CircleDot,
+    iconColorClassName: "text-lyra-status-warning-strong",
+    percent: 0,
+    teamPercent: 0,
+    time: "00:00:00",
+    teamTime: "00:00:00",
+  },
+  {
+    id: "unavailable",
+    label: "Unavailable",
+    icon: MinusCircle,
+    iconColorClassName: "text-lyra-status-critical-strong",
+    percent: 100,
+    teamPercent: 100,
+    time: "08:00:00",
+    teamTime: "08:00:00",
+  },
+];
+
+type DateFilterValue = "today" | "yesterday" | "last7" | "custom";
+
+const DATE_FILTER_OPTIONS: { value: DateFilterValue; label: string }[] = [
+  { value: "today",     label: "Today" },
+  { value: "yesterday", label: "Yesterday" },
+  { value: "last7",     label: "Last 7 days" },
+  { value: "custom",    label: "Custom" },
+];
+
+/* Single-select date filter chip — same trigger styling as FilterChip's
+   "active" variant (via the exported filterChipVariants), but a RadioGroup
+   (not checkboxes) in the popover since only one range can be selected at a
+   time. Selecting "Custom" reveals a DateRangePicker beneath the radio list. */
+function DateFilterChip() {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState<DateFilterValue>("today");
+  const [customRange, setCustomRange] = useState<DateRange | undefined>(undefined);
+
+  const selectedLabel = DATE_FILTER_OPTIONS.find((o) => o.value === value)?.label ?? "";
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      placement="bottom"
+      content={
+        <div className="flex flex-col gap-3 p-3 w-[260px]">
+          <RadioGroup value={value} onValueChange={(v) => setValue(v as DateFilterValue)}>
+            {DATE_FILTER_OPTIONS.map((option) => (
+              <RadioGroupItem key={option.value} value={option.value} label={option.label} />
+            ))}
+          </RadioGroup>
+          {value === "custom" && (
+            <DateRangePicker
+              value={customRange}
+              onChange={setCustomRange}
+              placeholder="Select date range"
+            />
+          )}
+        </div>
+      }
+    >
+      <button type="button" className={cn(filterChipVariants({ variant: "active" }), "rounded-lyra-md")}>
+        <span className="inline-flex items-baseline gap-1">
+          <span className="lyra-body-md-emphasis whitespace-nowrap">Date:</span>
+          <span className="lyra-body-md truncate">{selectedLabel}</span>
+        </span>
+        <ChevronDown className={cn("h-3.5 w-3.5 flex-shrink-0 transition-transform", open && "rotate-180")} strokeWidth={1.5} aria-hidden="true" />
+      </button>
+    </Popover>
+  );
+}
+
+function PerformanceBreakdownCard() {
+  return (
+    <Container
+      variant="neutral-subtle"
+      headerTitle="Productivity"
+      headerIcon={<Icon icon={Gauge} size="md" background="info" shape="rounded" decorative />}
+      headerActions={<DateFilterChip />}
+    >
+      <div className="flex flex-col gap-4 px-4 pb-4">
+        {PRODUCTIVITY_STATUS_ROWS.map((row) => (
+          <div key={row.id} className="flex flex-col gap-1.5">
+            {/* Self row */}
+            <div className="flex items-center justify-between gap-3">
+              <span className="inline-flex items-center gap-2 lyra-body-md-emphasis text-lyra-fg-default">
+                <row.icon className={cn("h-4 w-4", row.iconColorClassName)} strokeWidth={1.5} />
+                {row.label}
+                <span className="lyra-body-sm text-lyra-fg-secondary font-normal">({row.percent}%)</span>
+              </span>
+              <span className="lyra-body-md-emphasis tabular-nums text-lyra-fg-default">{row.time}</span>
+            </div>
+            {/* Team comparison row */}
+            <div className="flex items-center justify-between gap-3 pl-6">
+              <span className="lyra-body-sm text-lyra-fg-secondary">Team ({row.teamPercent}%)</span>
+              <span className="lyra-body-sm tabular-nums text-lyra-fg-secondary">{row.teamTime}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Container>
+  );
+}
+
+/* ── Interaction history table (sortable) — content of each Latest Interactions accordion item ── */
+
+type InteractionSortKey = "timestamp" | "agent" | "status" | "queue" | "skill";
+
+function nextInteractionSortDirection(current: SortDirection): SortDirection {
+  if (current === null) return "asc";
+  if (current === "asc") return "desc";
+  return null;
+}
+
+function InteractionsTable({ interactions }: { interactions: ContactInteraction[] }) {
+  const [sortKey, setSortKey] = useState<InteractionSortKey | null>(null);
+  const [sortDir, setSortDir] = useState<SortDirection>(null);
+
+  const handleSort = (key: InteractionSortKey) => {
+    if (sortKey === key) {
+      const next = nextInteractionSortDirection(sortDir);
+      setSortDir(next);
+      if (next === null) setSortKey(null);
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  };
+
+  const dirFor = (key: InteractionSortKey): SortDirection => (sortKey === key ? sortDir : null);
+
+  const sorted = [...interactions].sort((a, b) => {
+    if (!sortKey || !sortDir) return 0;
+    const aVal = a[sortKey].toLowerCase();
+    const bVal = b[sortKey].toLowerCase();
+    if (aVal < bVal) return sortDir === "asc" ? -1 : 1;
+    if (aVal > bVal) return sortDir === "asc" ? 1 : -1;
+    return 0;
+  });
+
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow className="hover:bg-transparent">
+          <TableHead className="w-[40px] shrink-0"><span className="sr-only">Type</span></TableHead>
+          <SortableTableHead className="flex-1" sortDirection={dirFor("timestamp")} onSort={() => handleSort("timestamp")}>Date/Time</SortableTableHead>
+          <SortableTableHead className="flex-[1.3]" sortDirection={dirFor("agent")} onSort={() => handleSort("agent")}>Name</SortableTableHead>
+          <SortableTableHead className="flex-1" sortDirection={dirFor("status")} onSort={() => handleSort("status")}>Status</SortableTableHead>
+          <SortableTableHead className="flex-[1.3]" sortDirection={dirFor("queue")} onSort={() => handleSort("queue")}>Queue</SortableTableHead>
+          <SortableTableHead className="flex-[1.3]" sortDirection={dirFor("skill")} onSort={() => handleSort("skill")}>Skill</SortableTableHead>
+          <TableHead className="w-[48px] shrink-0"><span className="sr-only">Actions</span></TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {sorted.map((interaction) => (
+          <TableRow key={interaction.id}>
+            <TableCell className="w-[40px] shrink-0">
+              <span className="relative inline-flex h-4 w-4 items-center justify-center text-lyra-fg-secondary">
+                {interaction.channel === "email" ? (
+                  <Mail className="h-4 w-4" strokeWidth={1.5} />
+                ) : (
+                  <MessageCircle className="h-4 w-4" strokeWidth={1.5} />
+                )}
+                {interaction.direction === "inbound" ? (
+                  <ArrowDown className="absolute -bottom-1 -left-1 h-3 w-3 rounded-full bg-lyra-bg-surface-base p-[1px]" strokeWidth={2} />
+                ) : (
+                  <ArrowUp className="absolute -bottom-1 -left-1 h-3 w-3 rounded-full bg-lyra-bg-surface-base p-[1px]" strokeWidth={2} />
+                )}
+              </span>
+            </TableCell>
+            <TableCell className="flex-1">{interaction.timestamp}</TableCell>
+            <TableCell className="flex-[1.3]">{interaction.agent}</TableCell>
+            <TableCell className="flex-1">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-lyra-status-critical-strong shrink-0" aria-hidden="true" />
+                {interaction.status}
+              </span>
+            </TableCell>
+            <TableCell className="flex-[1.3]">{interaction.queue}</TableCell>
+            <TableCell className="flex-[1.3]">{interaction.skill}</TableCell>
+            <TableCell className="w-[48px] shrink-0">
+              <button
+                aria-label="More options"
+                className="flex h-7 w-7 items-center justify-center rounded-lyra-sm text-lyra-fg-secondary hover:bg-lyra-bg-surface-shell transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus focus-visible:ring-offset-2"
+              >
+                <MoreVertical className="h-4 w-4" strokeWidth={1.5} aria-hidden="true" />
+              </button>
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
 /* ── Sparkle icon (Ask AI) ── */
 
 function AiSparkleIcon() {
@@ -109,7 +476,7 @@ function AiSparkleIcon() {
 
 /* ── AgentNextGenPage ── */
 
-type Page = "agent-workspace" | "agent" | "outbound";
+type Page = "agent-workspace" | "agent" | "outbound" | "login";
 
 const AI_PANEL_DEFAULT_WIDTH = 360;
 
@@ -498,6 +865,7 @@ export function AgentNextGenPage({
               onDarkModeToggle={handleDarkModeToggle}
               isDarkMode={darkMode}
               timer={formattedTimer}
+              onLogOut={() => onNavigate?.("login")}
               className="ml-1"
             />
           </>
@@ -567,7 +935,92 @@ export function AgentNextGenPage({
               )}
               {/* Body row: main content + interior panel */}
               <div className="relative flex flex-1 overflow-hidden">
-                <div className="flex-1" />
+                <div className="flex flex-1 flex-col min-w-0 overflow-y-auto px-6 py-6">
+                  <div className="w-full max-w-[1200px] mx-auto">
+                    {/* ── Greeting ── */}
+                    <h1 className="lyra-heading-xl text-lyra-fg-default">Good morning, Sarah</h1>
+                    <p className="lyra-body-sm text-lyra-fg-secondary mt-1">Last login: Today at 8:42 AM</p>
+                    <p className="lyra-body-md text-lyra-fg-default mt-4">
+                      You have 6 pending cases that need immediate attention. No cases resolved yet today.
+                      With 25 open and 5 pending, prioritise clearing blockers before your 09:00 callback.
+                      Keep an eye on handle time and aim to wrap responses within SLA windows.
+                    </p>
+
+                    {/* ── Summary cards ── */}
+                    <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+                      {SUMMARY_CARDS.map((card) => (
+                        <Container
+                          key={card.id}
+                          variant="neutral-subtle"
+                          headerTitle={card.title}
+                          headerIcon={
+                            <Icon icon={card.icon} size="md" background={card.iconBackground} shape="rounded" decorative />
+                          }
+                          headerActions={card.showDateFilter ? <DateFilterChip /> : undefined}
+                        >
+                          <div className="flex flex-col gap-3 px-4 pb-4">
+                            {card.rows.map((row) => (
+                              <div key={row.label} className="flex items-center justify-between">
+                                <span className="lyra-body-md text-lyra-fg-secondary">{row.label}</span>
+                                <span className={cn("lyra-heading-sm text-lyra-fg-default", row.valueClassName)}>{row.value}</span>
+                              </div>
+                            ))}
+                            <Divider />
+                            <div className="flex flex-col gap-0.5">
+                              <span className="lyra-body-sm text-lyra-fg-secondary">{card.footerLabel}</span>
+                              <span className="lyra-body-md-emphasis text-lyra-fg-default">{card.footerPrimary}</span>
+                              {card.footerSecondary && (
+                                <span className={cn("lyra-body-sm text-lyra-fg-disabled truncate", card.footerSecondaryClassName)}>
+                                  {card.footerSecondary}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </Container>
+                      ))}
+                      <PerformanceBreakdownCard />
+                    </div>
+
+                    {/* ── Latest Interactions ── */}
+                    <div className="mt-8 flex items-center gap-2">
+                      <h2 className="lyra-heading-md text-lyra-fg-default">Latest Interactions</h2>
+                      <button
+                        type="button"
+                        className="lyra-body-sm text-lyra-fg-secondary hover:text-lyra-fg-action transition-colors"
+                      >
+                        (view Contact History)
+                      </button>
+                    </div>
+
+                    <Accordion
+                      type="multiple"
+                      className="mt-3 rounded-lyra-lg border border-lyra-border-subtle bg-lyra-bg-surface-base overflow-hidden"
+                      items={LATEST_CONTACTS.map((contact) => ({
+                        id: contact.id,
+                        title: (
+                          <span className="inline-flex items-center gap-2">
+                            {contact.name}
+                            <Tag label={contact.status} variant="success" shape="pill" />
+                          </span>
+                        ),
+                        subhead: (
+                          <span className="flex flex-col gap-0.5">
+                            <span className="lyra-body-md text-lyra-fg-default">{contact.description}</span>
+                            <span className="inline-flex items-center gap-1">
+                              {contact.channel}
+                              <span aria-hidden="true">•</span>
+                              <Clock className="h-3 w-3" strokeWidth={1.5} />
+                              Wait: {contact.wait}
+                              <span aria-hidden="true">•</span>
+                              {contact.caseId}
+                            </span>
+                          </span>
+                        ),
+                        content: <InteractionsTable interactions={contact.interactions} />,
+                      }))}
+                    />
+                  </div>
+                </div>
                 {showInteriorPanel && (
                   <Panel
                     variant="interior"
