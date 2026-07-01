@@ -6,6 +6,7 @@ import {
   AppName,
   AppMenu,
   CXoneLogo,
+  Overlay,
   AiPanel,
   NotificationsBell,
   AgentNotifications,
@@ -28,11 +29,14 @@ import {
   SortableTableHead,
   Icon,
   Divider,
+  TabList,
+  Tab,
   Popover,
   RadioGroup,
   RadioGroupItem,
   DateRangePicker,
   filterChipVariants,
+  Menu,
   type NavItem,
   type SortDirection,
   type DateRange,
@@ -41,29 +45,34 @@ import {
   type AppMenuGroup,
   type AgentNotification,
   type DraggableVariant,
+  type MenuEntry,
 } from "@nicecxone/lyra-ui";
 import appIcon from "@/assets/app-icon.svg";
 import {
-  Home,
+  Monitor,
   Users,
   BookUser,
   CalendarDays,
   Settings,
   Plus,
   Phone,
+  PhoneOutgoing,
   Mail,
   MessageSquare,
   MessageCircle,
   Clock,
   ArrowDown,
   ArrowUp,
-  MoreVertical,
   TrendingUp,
   CheckCircle2,
   CircleDot,
   MinusCircle,
   Gauge,
   ChevronDown,
+  MoreVertical,
+  RotateCcw,
+  UserPlus,
+  UserRound,
   type LucideIcon,
 } from "lucide-react";
 
@@ -95,8 +104,8 @@ const ADD_CHANNEL_ITEMS: AddChannelItem[] = [
 
 const NAV_ITEMS: NavItem[] = [
   {
-    icon: <Home className="h-4 w-4" strokeWidth={1.5} />,
-    label: "Home",
+    icon: <Monitor className="h-4 w-4" strokeWidth={1.5} />,
+    label: "Desk",
     active: true,
   },
   {
@@ -132,19 +141,22 @@ const INITIAL_NOTIFICATIONS: AgentNotification[] = [
 
 interface ContactInteraction {
   id: string;
+  caseId: string;
+  priority: number;
+  type: "email" | "chat" | "voice";
   direction: "inbound" | "outbound";
-  channel: "email" | "chat";
-  timestamp: string;
-  agent: string;
-  status: "Closed";
-  queue: string;
+  createDate: string;
+  status: "open" | "closed";
+  channel: string;
+  resolutionTime: string;
   skill: string;
+  owner: string;
 }
 
 interface LatestContact {
   id: string;
   name: string;
-  status: "open" | "pending" | "closed";
+  status: "open" | "closed";
   description: string;
   channel: string;
   wait: string;
@@ -153,42 +165,85 @@ interface LatestContact {
 }
 
 /* Sample interaction-history rows, cycled per contact so each accordion's
-   interior table has a few realistic-looking prior interactions */
-const INTERACTION_AGENTS = ["Kevin Jensen", "Andres Arenas", "KrishnaCharan Mohanrao", "Srinivas Swargam", "Erwin de Vera", "Tim O'Connor", "Josh Robertson"];
-const INTERACTION_SOURCES: { channel: ContactInteraction["channel"]; queue: string; skill: string }[] = [
-  { channel: "email", queue: "CXi SME Email", skill: "Email_General" },
-  { channel: "chat",  queue: "Chat_General",  skill: "Chat_General" },
+   interior table has a few realistic-looking prior interactions. Each source
+   pairs a Type icon (email/chat/voice) with a real-looking channel + skill label. */
+const INTERACTION_CHANNELS: { type: ContactInteraction["type"]; channel: string; skill: string }[] = [
+  { type: "chat",  channel: "mojo_finance_async", skill: "" },
+  { type: "email", channel: "CXi SME Email",      skill: "Chat_General" },
+  { type: "chat",  channel: "Chat_General",       skill: "Chat_General" },
+  { type: "chat",  channel: "Rebooking_Chat",     skill: "Rebooking" },
+  { type: "voice", channel: "Voice_General",      skill: "" },
+  { type: "email", channel: "Email_Support",      skill: "Billing_Support" },
+  { type: "chat",  channel: "SMS_General",        skill: "Technical_Support" },
 ];
 
-function buildInteractions(seed: number): ContactInteraction[] {
-  return Array.from({ length: 3 }, (_, i) => {
-    const source = INTERACTION_SOURCES[(seed + i) % INTERACTION_SOURCES.length];
-    const day = 5 + ((seed + i) % 4);
-    const hour24 = 11 + ((seed * 2 + i * 3) % 8);
-    const minute = (seed * 7 + i * 13) % 60;
-    const isPM = hour24 >= 12;
-    const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+const RESOLUTION_TIMES = ["0 sec", "12 sec", "45 sec", "1 min", "2 min", "3 min", "5 min", "8 min"];
+
+/* Logged-in agent — matches the "Good morning, John" home screen greeting.
+   Used both to populate the Owner Assignee column and to decide whether an
+   interaction's kebab menu should offer "Assign To Me" (only when it isn't
+   already his). */
+const CURRENT_AGENT_NAME = "John Smith";
+
+const INTERACTION_OWNERS = [
+  "John Smith",
+  "Kevin Jensen",
+  "Andres Arenas",
+  "Priya Anand",
+  "Erwin de Vera",
+  "Tim O'Connor",
+  "Josh Robertson",
+];
+
+/* Deterministic 12-digit case-ID generator (no Math.random, so the dashboard
+   renders the same sample data on every load) */
+function makeCaseId(seed: number, i: number): string {
+  return String(470000000000 + seed * 111111 + i * 7777);
+}
+
+function formatCreateDate(seed: number, i: number): string {
+  const month = 1 + ((seed * 5 + i) % 12);
+  const day = 1 + ((seed * 3 + i * 5) % 28);
+  const year = 24 + ((seed + i) % 3);
+  const hour24 = (seed * 2 + i * 3) % 24;
+  const minute = (seed * 7 + i * 13) % 60;
+  const isPM = hour24 >= 12;
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}/${year} ${hour12}:${String(minute).padStart(2, "0")} ${isPM ? "PM" : "AM"}`;
+}
+
+/* contactStatus drives every interaction's status: a closed case has every
+   interaction closed; an open case has exactly one (its most recent, i === 0)
+   still-open interaction — which also has no resolution time yet — while the
+   rest of its history is closed. */
+function buildInteractions(seed: number, contactStatus: "open" | "closed", count: number): ContactInteraction[] {
+  return Array.from({ length: count }, (_, i) => {
+    const source = INTERACTION_CHANNELS[(seed + i) % INTERACTION_CHANNELS.length];
+    const isStillOpen = contactStatus === "open" && i === 0;
     return {
       id: `${seed}-${i}`,
+      caseId: makeCaseId(seed, i),
+      priority: 0,
+      type: source.type,
       direction: i % 2 === 0 ? "inbound" : "outbound",
+      createDate: formatCreateDate(seed, i),
+      status: isStillOpen ? "open" : "closed",
       channel: source.channel,
-      timestamp: `09/0${day}/25 ${hour12}:${String(minute).padStart(2, "0")} ${isPM ? "PM" : "AM"}`,
-      agent: INTERACTION_AGENTS[(seed + i) % INTERACTION_AGENTS.length],
-      status: "Closed",
-      queue: source.queue,
+      resolutionTime: isStillOpen ? "—" : RESOLUTION_TIMES[(seed * 3 + i * 5) % RESOLUTION_TIMES.length],
       skill: source.skill,
+      owner: INTERACTION_OWNERS[(seed * 5 + i * 3) % INTERACTION_OWNERS.length],
     };
   });
 }
 
 const LATEST_CONTACTS: LatestContact[] = [
-  { id: "1", name: "Lily Chen",          status: "open", description: "Unaccompanied minor (age 11) stuck at ORD — connecting flight canceled",              channel: "Atlas",        wait: "1m",  caseId: "CST-21009", interactions: buildInteractions(1) },
-  { id: "2", name: "Amara Okafor",       status: "open", description: "Pregnant traveler (32 weeks) — needs medical clearance and accommodation",             channel: "Atlas",        wait: "3m",  caseId: "CST-21016", interactions: buildInteractions(2) },
-  { id: "3", name: "Priya Sharma-Patel", status: "open", description: "Pediatric nurse — must reach children's hospital for emergency shift coverage",        channel: "Atlas",        wait: "2m",  caseId: "CST-21028", interactions: buildInteractions(3) },
-  { id: "4", name: "Alex Sanderson",     status: "open", description: "Mechanical delay on VY-4450 — LHR→FCO connection at risk, partner upgrade exceeds auth threshold", channel: "Emily", wait: "3m",  caseId: "CST-15001", interactions: buildInteractions(4) },
-  { id: "5", name: "Rachel Nguyen",      status: "open", description: "Family of 4 with infant — connecting flight MSP→ORD canceled",                         channel: "Atlas",        wait: "12m", caseId: "CST-21001", interactions: buildInteractions(5) },
-  { id: "6", name: "Richard Takahashi",  status: "open", description: "Executive missing board meeting in NYC — needs earliest possible rebooking",           channel: "Rebooking Bot", wait: "6m",  caseId: "CST-21004", interactions: buildInteractions(6) },
-  { id: "7", name: "Fatima Al-Rashidi",  status: "open", description: "Business traveler — critical client presentation in Dallas tomorrow",                  channel: "Rebooking Bot", wait: "15m", caseId: "CST-21012", interactions: buildInteractions(7) },
+  { id: "1", name: "Lily Chen",          status: "open",   description: "Unaccompanied minor (age 11) stuck at ORD — connecting flight canceled",              channel: "Atlas",        wait: "1m",  caseId: "CST-21009", interactions: buildInteractions(1, "open", 3) },
+  { id: "2", name: "Amara Okafor",       status: "open",   description: "Pregnant traveler (32 weeks) — needs medical clearance and accommodation",             channel: "Atlas",        wait: "3m",  caseId: "CST-21016", interactions: buildInteractions(2, "open", 5) },
+  { id: "3", name: "Priya Sharma-Patel", status: "closed", description: "Pediatric nurse — must reach children's hospital for emergency shift coverage",        channel: "Atlas",        wait: "2m",  caseId: "CST-21028", interactions: buildInteractions(3, "closed", 1) },
+  { id: "4", name: "Alex Sanderson",     status: "open",   description: "Mechanical delay on VY-4450 — LHR→FCO connection at risk, partner upgrade exceeds auth threshold", channel: "Emily", wait: "3m",  caseId: "CST-15001", interactions: buildInteractions(4, "open", 7) },
+  { id: "5", name: "Rachel Nguyen",      status: "closed", description: "Family of 4 with infant — connecting flight MSP→ORD canceled",                         channel: "Atlas",        wait: "12m", caseId: "CST-21001", interactions: buildInteractions(5, "closed", 2) },
+  { id: "6", name: "Richard Takahashi",  status: "open",   description: "Executive missing board meeting in NYC — needs earliest possible rebooking",           channel: "Rebooking Bot", wait: "6m",  caseId: "CST-21004", interactions: buildInteractions(6, "open", 4) },
+  { id: "7", name: "Fatima Al-Rashidi",  status: "closed", description: "Business traveler — critical client presentation in Dallas tomorrow",                  channel: "Rebooking Bot", wait: "15m", caseId: "CST-21012", interactions: buildInteractions(7, "closed", 6) },
 ];
 
 /* ── Home screen summary cards ── */
@@ -198,7 +253,7 @@ interface SummaryCard {
   title: string;
   icon: LucideIcon;
   iconBackground: "active" | "success" | "info";
-  showDateFilter?: boolean;
+  headerAction?: React.ReactNode;
   rows: { label: string; value: string; valueClassName?: string }[];
   footerLabel: string;
   footerPrimary: string;
@@ -212,6 +267,11 @@ const SUMMARY_CARDS: SummaryCard[] = [
     title: "Schedule",
     icon: CalendarDays,
     iconBackground: "active",
+    headerAction: (
+      <Button variant="outline" size="md">
+        View Schedule
+      </Button>
+    ),
     rows: [
       { label: "Total Events", value: "6" },
       { label: "Callbacks", value: "3", valueClassName: "text-lyra-status-warning-strong" },
@@ -220,75 +280,75 @@ const SUMMARY_CARDS: SummaryCard[] = [
     footerPrimary: "Customer Callback",
     footerSecondary: "09:00 AM",
   },
-  {
-    id: "performance",
-    title: "Performance",
-    icon: TrendingUp,
-    iconBackground: "success",
-    showDateFilter: true,
-    rows: [
-      { label: "Cases Resolved", value: "12" },
-      { label: "CSAT Score", value: "4.8", valueClassName: "text-lyra-status-success-strong" },
-    ],
-    footerLabel: "Handle Time:",
-    footerPrimary: "8m 32s",
-    footerSecondary: "15% improvement",
-    footerSecondaryClassName: "text-lyra-status-success-strong",
-  },
 ];
+
+type DateFilterValue = "today" | "yesterday" | "last7" | "custom";
+
+/* Dummy Performance data per date range — drives the Performance summary
+   card's rows/footer so the numbers actually change when a range is picked. */
+const PERFORMANCE_DATA_BY_RANGE: Record<
+  DateFilterValue,
+  { casesResolved: string; csat: string; handleTime: string; improvement: string }
+> = {
+  today:     { casesResolved: "12",  csat: "4.8", handleTime: "8m 32s", improvement: "15% improvement" },
+  yesterday: { casesResolved: "19",  csat: "4.6", handleTime: "9m 05s", improvement: "8% improvement" },
+  last7:     { casesResolved: "104", csat: "4.7", handleTime: "8m 50s", improvement: "11% improvement" },
+  custom:    { casesResolved: "—",   csat: "—",   handleTime: "—",      improvement: "Select a range" },
+};
 
 /* ── Productivity breakdown card (agent state duration bars + date filter chip) ──
    Replaces the third summary card slot — same Container/header styling as the
    Schedule/Performance stat cards (no Table), with a FilterChip (search + Select
    All + checkbox options) for the date filter in the header. Each agent state
    (Available/Working/Unavailable) shows the agent's own duration bar + time,
-   plus a lighter "Team" comparison bar + time beneath it. */
+   plus a lighter "Team" comparison bar + time beneath it. Static id/label/icon
+   metadata is kept separate from the per-range numeric values so the date
+   filter can swap the values without touching the row definitions. */
 
-interface ProductivityStatusRow {
-  id: string;
+type ProductivityStatusId = "available" | "working" | "unavailable";
+
+interface ProductivityStatusMeta {
+  id: ProductivityStatusId;
   label: string;
   icon: LucideIcon;
   iconColorClassName: string;
+}
+
+const PRODUCTIVITY_STATUS_META: ProductivityStatusMeta[] = [
+  { id: "available",   label: "Available",   icon: CheckCircle2, iconColorClassName: "text-lyra-status-success-strong" },
+  { id: "working",     label: "Working",     icon: CircleDot,    iconColorClassName: "text-lyra-status-warning-strong" },
+  { id: "unavailable", label: "Unavailable", icon: MinusCircle,  iconColorClassName: "text-lyra-status-critical-strong" },
+];
+
+interface ProductivityStatusValue {
   percent: number;
   teamPercent: number;
   time: string;
   teamTime: string;
 }
 
-const PRODUCTIVITY_STATUS_ROWS: ProductivityStatusRow[] = [
-  {
-    id: "available",
-    label: "Available",
-    icon: CheckCircle2,
-    iconColorClassName: "text-lyra-status-success-strong",
-    percent: 0,
-    teamPercent: 0,
-    time: "00:00:00",
-    teamTime: "00:00:00",
+const PRODUCTIVITY_DATA_BY_RANGE: Record<DateFilterValue, Record<ProductivityStatusId, ProductivityStatusValue>> = {
+  today: {
+    available:   { percent: 22, teamPercent: 28, time: "01:45:12", teamTime: "02:14:40" },
+    working:     { percent: 61, teamPercent: 55, time: "04:53:08", teamTime: "04:24:00" },
+    unavailable: { percent: 17, teamPercent: 17, time: "01:21:40", teamTime: "01:21:20" },
   },
-  {
-    id: "working",
-    label: "Working",
-    icon: CircleDot,
-    iconColorClassName: "text-lyra-status-warning-strong",
-    percent: 0,
-    teamPercent: 0,
-    time: "00:00:00",
-    teamTime: "00:00:00",
+  yesterday: {
+    available:   { percent: 18, teamPercent: 24, time: "01:26:24", teamTime: "01:55:12" },
+    working:     { percent: 67, teamPercent: 58, time: "05:21:36", teamTime: "04:38:24" },
+    unavailable: { percent: 15, teamPercent: 18, time: "01:12:00", teamTime: "01:26:24" },
   },
-  {
-    id: "unavailable",
-    label: "Unavailable",
-    icon: MinusCircle,
-    iconColorClassName: "text-lyra-status-critical-strong",
-    percent: 100,
-    teamPercent: 100,
-    time: "08:00:00",
-    teamTime: "08:00:00",
+  last7: {
+    available:   { percent: 24, teamPercent: 27, time: "13:26:00", teamTime: "15:07:20" },
+    working:     { percent: 58, teamPercent: 54, time: "32:26:24", teamTime: "30:14:24" },
+    unavailable: { percent: 18, teamPercent: 19, time: "10:04:48", teamTime: "10:38:16" },
   },
-];
-
-type DateFilterValue = "today" | "yesterday" | "last7" | "custom";
+  custom: {
+    available:   { percent: 0, teamPercent: 0, time: "00:00:00", teamTime: "00:00:00" },
+    working:     { percent: 0, teamPercent: 0, time: "00:00:00", teamTime: "00:00:00" },
+    unavailable: { percent: 0, teamPercent: 0, time: "00:00:00", teamTime: "00:00:00" },
+  },
+};
 
 const DATE_FILTER_OPTIONS: { value: DateFilterValue; label: string }[] = [
   { value: "today",     label: "Today" },
@@ -301,12 +361,17 @@ const DATE_FILTER_OPTIONS: { value: DateFilterValue; label: string }[] = [
    "active" variant (via the exported filterChipVariants), but a RadioGroup
    (not checkboxes) in the popover since only one range can be selected at a
    time. Selecting "Custom" reveals a DateRangePicker beneath the radio list. */
-function DateFilterChip() {
+function DateFilterChip({ onValueChange }: { onValueChange?: (value: DateFilterValue) => void }) {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState<DateFilterValue>("today");
   const [customRange, setCustomRange] = useState<DateRange | undefined>(undefined);
 
   const selectedLabel = DATE_FILTER_OPTIONS.find((o) => o.value === value)?.label ?? "";
+
+  const handleValueChange = (v: DateFilterValue) => {
+    setValue(v);
+    onValueChange?.(v);
+  };
 
   return (
     <Popover
@@ -315,7 +380,7 @@ function DateFilterChip() {
       placement="bottom"
       content={
         <div className="flex flex-col gap-3 p-3 w-[260px]">
-          <RadioGroup value={value} onValueChange={(v) => setValue(v as DateFilterValue)}>
+          <RadioGroup value={value} onValueChange={(v) => handleValueChange(v as DateFilterValue)}>
             {DATE_FILTER_OPTIONS.map((option) => (
               <RadioGroupItem key={option.value} value={option.value} label={option.label} />
             ))}
@@ -342,32 +407,72 @@ function DateFilterChip() {
 }
 
 function PerformanceBreakdownCard() {
+  const [dateFilter, setDateFilter] = useState<DateFilterValue>("today");
+  const values = PRODUCTIVITY_DATA_BY_RANGE[dateFilter];
+
   return (
     <Container
       variant="neutral-subtle"
       headerTitle="Productivity"
       headerIcon={<Icon icon={Gauge} size="md" background="info" shape="rounded" decorative />}
-      headerActions={<DateFilterChip />}
+      headerActions={<DateFilterChip onValueChange={setDateFilter} />}
     >
       <div className="flex flex-col gap-4 px-4 pb-4">
-        {PRODUCTIVITY_STATUS_ROWS.map((row) => (
-          <div key={row.id} className="flex flex-col gap-1.5">
-            {/* Self row */}
-            <div className="flex items-center justify-between gap-3">
-              <span className="inline-flex items-center gap-2 lyra-body-md-emphasis text-lyra-fg-default">
-                <row.icon className={cn("h-4 w-4", row.iconColorClassName)} strokeWidth={1.5} />
-                {row.label}
-                <span className="lyra-body-sm text-lyra-fg-secondary font-normal">({row.percent}%)</span>
-              </span>
-              <span className="lyra-body-md-emphasis tabular-nums text-lyra-fg-default">{row.time}</span>
+        {PRODUCTIVITY_STATUS_META.map((meta) => {
+          const row = values[meta.id];
+          return (
+            <div key={meta.id} className="flex flex-col gap-1.5">
+              {/* Self row */}
+              <div className="flex items-center justify-between gap-3">
+                <span className="inline-flex items-center gap-2 lyra-body-md-emphasis text-lyra-fg-default">
+                  <meta.icon className={cn("h-4 w-4", meta.iconColorClassName)} strokeWidth={1.5} />
+                  {meta.label}
+                  <span className="lyra-body-sm text-lyra-fg-secondary font-normal">({row.percent}%)</span>
+                </span>
+                <span className="lyra-body-md-emphasis tabular-nums text-lyra-fg-default">{row.time}</span>
+              </div>
+              {/* Team comparison row */}
+              <div className="flex items-center justify-between gap-3 pl-6">
+                <span className="lyra-body-sm text-lyra-fg-secondary">Team ({row.teamPercent}%)</span>
+                <span className="lyra-body-sm tabular-nums text-lyra-fg-secondary">{row.teamTime}</span>
+              </div>
             </div>
-            {/* Team comparison row */}
-            <div className="flex items-center justify-between gap-3 pl-6">
-              <span className="lyra-body-sm text-lyra-fg-secondary">Team ({row.teamPercent}%)</span>
-              <span className="lyra-body-sm tabular-nums text-lyra-fg-secondary">{row.teamTime}</span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
+      </div>
+    </Container>
+  );
+}
+
+/* Performance summary card — mirrors PerformanceBreakdownCard's pattern:
+   owns its own date filter state and looks up dummy data per range so the
+   Cases Resolved / CSAT / Handle Time numbers change when a range is picked. */
+function PerformanceSummaryCard() {
+  const [dateFilter, setDateFilter] = useState<DateFilterValue>("today");
+  const data = PERFORMANCE_DATA_BY_RANGE[dateFilter];
+
+  return (
+    <Container
+      variant="neutral-subtle"
+      headerTitle="Performance"
+      headerIcon={<Icon icon={TrendingUp} size="md" background="success" shape="rounded" decorative />}
+      headerActions={<DateFilterChip onValueChange={setDateFilter} />}
+    >
+      <div className="flex flex-col gap-3 px-4 pb-4">
+        <div className="flex items-center justify-between">
+          <span className="lyra-body-md text-lyra-fg-secondary">Cases Resolved</span>
+          <span className="lyra-heading-sm text-lyra-fg-default">{data.casesResolved}</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="lyra-body-md text-lyra-fg-secondary">CSAT Score</span>
+          <span className="lyra-heading-sm text-lyra-status-success-strong">{data.csat}</span>
+        </div>
+        <Divider />
+        <div className="flex flex-col gap-0.5">
+          <span className="lyra-body-sm text-lyra-fg-secondary">Handle Time:</span>
+          <span className="lyra-body-md-emphasis text-lyra-fg-default">{data.handleTime}</span>
+          <span className="lyra-body-sm text-lyra-status-success-strong truncate">{data.improvement}</span>
+        </div>
       </div>
     </Container>
   );
@@ -375,12 +480,59 @@ function PerformanceBreakdownCard() {
 
 /* ── Interaction history table (sortable) — content of each Latest Interactions accordion item ── */
 
-type InteractionSortKey = "timestamp" | "agent" | "status" | "queue" | "skill";
+type InteractionSortKey = "owner" | "priority" | "createDate" | "status" | "channel" | "resolutionTime" | "skill";
 
 function nextInteractionSortDirection(current: SortDirection): SortDirection {
   if (current === null) return "asc";
   if (current === "asc") return "desc";
   return null;
+}
+
+/* Per-row "more options" kebab — opens a Menu with a single contextual
+   action: voice interactions offer "Redial", everything else offers "Reopen". */
+function InteractionRowActions({ interaction }: { interaction: ContactInteraction }) {
+  const [open, setOpen] = useState(false);
+  const isVoice = interaction.type === "voice";
+  const isAssignedToMe = interaction.owner === CURRENT_AGENT_NAME;
+
+  const items: MenuEntry[] = [];
+  items.push(
+    isVoice
+      ? { id: "redial", label: "Redial", icon: <PhoneOutgoing className="h-4 w-4" strokeWidth={1.5} />, onClick: () => setOpen(false) }
+      : {
+          id: interaction.status === "open" ? "open-interaction" : "reopen",
+          label: interaction.status === "open" ? "Open Interaction" : "Reopen",
+          icon: <RotateCcw className="h-4 w-4" strokeWidth={1.5} />,
+          onClick: () => setOpen(false),
+        }
+  );
+  if (!isAssignedToMe) {
+    items.push({
+      id: "assign-to-me",
+      label: "Assign To Me",
+      icon: <UserPlus className="h-4 w-4" strokeWidth={1.5} />,
+      onClick: () => setOpen(false),
+    });
+  }
+  items.push("separator");
+  items.push({
+    id: "customer-info",
+    label: "Customer Information",
+    icon: <UserRound className="h-4 w-4" strokeWidth={1.5} />,
+    onClick: () => setOpen(false),
+  });
+
+  return (
+    <Popover open={open} onOpenChange={setOpen} placement="bottom" content={<Menu items={items} />}>
+      <button
+        type="button"
+        aria-label="More options"
+        className="flex h-7 w-7 items-center justify-center rounded-lyra-sm text-lyra-fg-secondary hover:bg-lyra-bg-surface-shell transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus focus-visible:ring-offset-2"
+      >
+        <MoreVertical className="h-4 w-4" strokeWidth={1.5} aria-hidden="true" />
+      </button>
+    </Popover>
+  );
 }
 
 function InteractionsTable({ interactions }: { interactions: ContactInteraction[] }) {
@@ -402,8 +554,8 @@ function InteractionsTable({ interactions }: { interactions: ContactInteraction[
 
   const sorted = [...interactions].sort((a, b) => {
     if (!sortKey || !sortDir) return 0;
-    const aVal = a[sortKey].toLowerCase();
-    const bVal = b[sortKey].toLowerCase();
+    const aVal = String(a[sortKey]).toLowerCase();
+    const bVal = String(b[sortKey]).toLowerCase();
     if (aVal < bVal) return sortDir === "asc" ? -1 : 1;
     if (aVal > bVal) return sortDir === "asc" ? 1 : -1;
     return 0;
@@ -413,22 +565,26 @@ function InteractionsTable({ interactions }: { interactions: ContactInteraction[
     <Table>
       <TableHeader>
         <TableRow className="hover:bg-transparent">
-          <TableHead className="w-[40px] shrink-0"><span className="sr-only">Type</span></TableHead>
-          <SortableTableHead className="flex-1" sortDirection={dirFor("timestamp")} onSort={() => handleSort("timestamp")}>Date/Time</SortableTableHead>
-          <SortableTableHead className="flex-[1.3]" sortDirection={dirFor("agent")} onSort={() => handleSort("agent")}>Name</SortableTableHead>
+          <TableHead className="w-[48px] shrink-0"><span className="sr-only">Type</span></TableHead>
+          <SortableTableHead className="flex-[1.4]" sortDirection={dirFor("owner")} onSort={() => handleSort("owner")}>Owner Assignee</SortableTableHead>
+          <SortableTableHead className="flex-[0.7]" sortDirection={dirFor("priority")} onSort={() => handleSort("priority")}>Priority</SortableTableHead>
+          <SortableTableHead className="flex-1" sortDirection={dirFor("createDate")} onSort={() => handleSort("createDate")}>Create Date</SortableTableHead>
           <SortableTableHead className="flex-1" sortDirection={dirFor("status")} onSort={() => handleSort("status")}>Status</SortableTableHead>
-          <SortableTableHead className="flex-[1.3]" sortDirection={dirFor("queue")} onSort={() => handleSort("queue")}>Queue</SortableTableHead>
-          <SortableTableHead className="flex-[1.3]" sortDirection={dirFor("skill")} onSort={() => handleSort("skill")}>Skill</SortableTableHead>
+          <SortableTableHead className="flex-[1.2]" sortDirection={dirFor("channel")} onSort={() => handleSort("channel")}>Channel</SortableTableHead>
+          <SortableTableHead className="flex-1" sortDirection={dirFor("resolutionTime")} onSort={() => handleSort("resolutionTime")}>Resolution Time</SortableTableHead>
+          <SortableTableHead className="flex-1" sortDirection={dirFor("skill")} onSort={() => handleSort("skill")}>Skill</SortableTableHead>
           <TableHead className="w-[48px] shrink-0"><span className="sr-only">Actions</span></TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {sorted.map((interaction) => (
           <TableRow key={interaction.id}>
-            <TableCell className="w-[40px] shrink-0">
+            <TableCell className="w-[48px] shrink-0">
               <span className="relative inline-flex h-4 w-4 items-center justify-center text-lyra-fg-secondary">
-                {interaction.channel === "email" ? (
+                {interaction.type === "email" ? (
                   <Mail className="h-4 w-4" strokeWidth={1.5} />
+                ) : interaction.type === "voice" ? (
+                  <Phone className="h-4 w-4" strokeWidth={1.5} />
                 ) : (
                   <MessageCircle className="h-4 w-4" strokeWidth={1.5} />
                 )}
@@ -439,23 +595,26 @@ function InteractionsTable({ interactions }: { interactions: ContactInteraction[
                 )}
               </span>
             </TableCell>
-            <TableCell className="flex-1">{interaction.timestamp}</TableCell>
-            <TableCell className="flex-[1.3]">{interaction.agent}</TableCell>
+            <TableCell className="flex-[1.4]">{interaction.owner}</TableCell>
+            <TableCell className="flex-[0.7]">{interaction.priority}</TableCell>
+            <TableCell className="flex-1">{interaction.createDate}</TableCell>
             <TableCell className="flex-1">
               <span className="inline-flex items-center gap-1.5">
-                <span className="h-2 w-2 rounded-full bg-lyra-status-critical-strong shrink-0" aria-hidden="true" />
-                {interaction.status}
+                <span
+                  className={cn(
+                    "h-2 w-2 rounded-full shrink-0",
+                    interaction.status === "open" ? "bg-lyra-status-success-strong" : "bg-lyra-status-critical-strong"
+                  )}
+                  aria-hidden="true"
+                />
+                {interaction.status === "open" ? "Open" : "Closed"}
               </span>
             </TableCell>
-            <TableCell className="flex-[1.3]">{interaction.queue}</TableCell>
-            <TableCell className="flex-[1.3]">{interaction.skill}</TableCell>
+            <TableCell className="flex-[1.2]">{interaction.channel}</TableCell>
+            <TableCell className="flex-1">{interaction.resolutionTime}</TableCell>
+            <TableCell className="flex-1">{interaction.skill || "—"}</TableCell>
             <TableCell className="w-[48px] shrink-0">
-              <button
-                aria-label="More options"
-                className="flex h-7 w-7 items-center justify-center rounded-lyra-sm text-lyra-fg-secondary hover:bg-lyra-bg-surface-shell transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus focus-visible:ring-offset-2"
-              >
-                <MoreVertical className="h-4 w-4" strokeWidth={1.5} aria-hidden="true" />
-              </button>
+              <InteractionRowActions interaction={interaction} />
             </TableCell>
           </TableRow>
         ))}
@@ -492,9 +651,11 @@ export function AgentNextGenPage({
   onNavigate?: (page: Page) => void;
 }) {
   const [navOpen, setNavOpen] = useState(false);
+  const [activeDeskTab, setActiveDeskTab] = useState<"home" | "customers" | "accounts" | "tickets" | "tasks">("home");
   const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
   const [notifications, setNotifications] = useState(INITIAL_NOTIFICATIONS);
-  const [agentStatus, setAgentStatus] = useState<AgentStatus>("available");
+  const [agentStatus, setAgentStatus] = useState<AgentStatus>("offline");
+  const [showWelcomeModal, setShowWelcomeModal] = useState(true);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [appMenuOpen, setAppMenuOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(
@@ -634,6 +795,17 @@ export function AgentNextGenPage({
   const handleStatusChange = (status: AgentStatus) => {
     setAgentStatus(status);
     setElapsedSeconds(0);
+  };
+
+  /* Welcome modal — shown once on page load; "Go Available" flips the agent
+     to Available, "Start Offline" keeps them Offline (the default state). */
+  const handleGoAvailable = () => {
+    handleStatusChange("available");
+    setShowWelcomeModal(false);
+  };
+  const handleStartOffline = () => {
+    handleStatusChange("offline");
+    setShowWelcomeModal(false);
   };
 
   /* AI panel show/hide */
@@ -809,7 +981,7 @@ export function AgentNextGenPage({
   ) : null;
 
   return (
-    <div className="flex flex-col h-screen bg-lyra-bg-surface-shell overflow-hidden">
+    <div className="flex flex-col h-screen bg-lyra-bg-surface-shell overflow-hidden animate-in fade-in-0 duration-500">
 
       {/* ── App Header ── */}
       <AppHeader
@@ -910,7 +1082,7 @@ export function AgentNextGenPage({
             <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
               {showPageHeader && (
                 <PageHeader
-                  title="Home"
+                  title="Desk"
                   panelToggle={
                     showPanelToggle && showInteriorPanel ? "both"
                     : showPanelToggle ? "left"
@@ -933,16 +1105,35 @@ export function AgentNextGenPage({
                   }
                 />
               )}
+              {showPageHeader && (
+                <TabList className="px-6 bg-lyra-bg-surface-base shrink-0">
+                  <Tab active={activeDeskTab === "home"} onClick={() => setActiveDeskTab("home")}>
+                    Home
+                  </Tab>
+                  <Tab active={activeDeskTab === "customers"} onClick={() => setActiveDeskTab("customers")}>
+                    Customers List
+                  </Tab>
+                  <Tab active={activeDeskTab === "accounts"} onClick={() => setActiveDeskTab("accounts")}>
+                    Accounts List
+                  </Tab>
+                  <Tab active={activeDeskTab === "tickets"} onClick={() => setActiveDeskTab("tickets")}>
+                    Tickets List
+                  </Tab>
+                  <Tab active={activeDeskTab === "tasks"} onClick={() => setActiveDeskTab("tasks")}>
+                    Tasks
+                  </Tab>
+                </TabList>
+              )}
               {/* Body row: main content + interior panel */}
               <div className="relative flex flex-1 overflow-hidden">
                 <div className="flex flex-1 flex-col min-w-0 overflow-y-auto px-6 py-6">
                   <div className="w-full max-w-[1200px] mx-auto">
                     {/* ── Greeting ── */}
-                    <h1 className="lyra-heading-xl text-lyra-fg-default">Good morning, Sarah</h1>
+                    <h1 className="lyra-heading-xl text-lyra-fg-default">Good morning, John</h1>
                     <p className="lyra-body-sm text-lyra-fg-secondary mt-1">Last login: Today at 8:42 AM</p>
                     <p className="lyra-body-md text-lyra-fg-default mt-4">
-                      You have 6 pending cases that need immediate attention. No cases resolved yet today.
-                      With 25 open and 5 pending, prioritise clearing blockers before your 09:00 callback.
+                      You have 4 open cases that need attention, and you've already resolved 12 today.
+                      Your availability is down a bit compared to your team, but your working time is up.
                       Keep an eye on handle time and aim to wrap responses within SLA windows.
                     </p>
 
@@ -956,7 +1147,7 @@ export function AgentNextGenPage({
                           headerIcon={
                             <Icon icon={card.icon} size="md" background={card.iconBackground} shape="rounded" decorative />
                           }
-                          headerActions={card.showDateFilter ? <DateFilterChip /> : undefined}
+                          headerActions={card.headerAction}
                         >
                           <div className="flex flex-col gap-3 px-4 pb-4">
                             {card.rows.map((row) => (
@@ -978,18 +1169,13 @@ export function AgentNextGenPage({
                           </div>
                         </Container>
                       ))}
+                      <PerformanceSummaryCard />
                       <PerformanceBreakdownCard />
                     </div>
 
-                    {/* ── Latest Interactions ── */}
+                    {/* ── Latest Cases ── */}
                     <div className="mt-8 flex items-center gap-2">
-                      <h2 className="lyra-heading-md text-lyra-fg-default">Latest Interactions</h2>
-                      <button
-                        type="button"
-                        className="lyra-body-sm text-lyra-fg-secondary hover:text-lyra-fg-action transition-colors"
-                      >
-                        (view Contact History)
-                      </button>
+                      <h2 className="lyra-heading-md text-lyra-fg-default">Latest Cases</h2>
                     </div>
 
                     <Accordion
@@ -1000,7 +1186,11 @@ export function AgentNextGenPage({
                         title: (
                           <span className="inline-flex items-center gap-2">
                             {contact.name}
-                            <Tag label={contact.status} variant="success" shape="pill" />
+                            <Tag
+                              label={contact.status === "open" ? "open" : "closed"}
+                              variant={contact.status === "open" ? "success" : "critical"}
+                              shape="pill"
+                            />
                           </span>
                         ),
                         subhead: (
@@ -1139,6 +1329,57 @@ export function AgentNextGenPage({
         )}
 
       </div>
+
+      {/* ── Welcome modal — shown once on page load. Uses the real lyra-ui
+          Overlay component (variant="light": frosted blur backdrop,
+          portal-rendered via Radix Dialog) rather than a hand-rolled backdrop
+          div, so it actually dims/blurs the dashboard behind it like a real
+          overlay instead of just painting over it. Not dismissible via
+          backdrop click or Escape — only the two buttons close it.
+
+          Overlay's "light" variant is a fixed `bg-white/70` by design (see
+          Overlay.stories.tsx — "light" vs. "dark" are two deliberately
+          static, theme-independent overlay looks, not meant to react to
+          dark mode). This page's backdrop needs to actually match the
+          current theme, so we override just the background color via
+          `className` (twMerge drops the variant's `bg-white/70` for this
+          `bg-[color-mix(...)]`, keeping `backdrop-blur-sm`). We use
+          color-mix() instead of a plain `bg-lyra-bg-surface-shell/70`
+          opacity modifier because Tailwind can't generate opacity-modified
+          utilities for our `var(--lyra-color-*)` tokens (same root cause as
+          the Tag border-color bug — see lyra-ui's PROJECT_SUMMARY.md). ── */}
+      <Overlay
+        variant="light"
+        className="bg-[color-mix(in_srgb,var(--lyra-color-bg-surface-shell)_75%,transparent)]"
+        open={showWelcomeModal}
+        onClose={() => setShowWelcomeModal(false)}
+        closeOnBackdropClick={false}
+      >
+        <div className="w-[420px] rounded-lyra-lg border border-lyra-border-subtle bg-lyra-bg-surface-base p-6 shadow-lg">
+          <div className="flex items-start gap-3">
+            <img src={appIcon} alt="" className="h-8 w-8 shrink-0" />
+            <div className="flex flex-col gap-1">
+              <h2 className="lyra-heading-lg text-lyra-fg-default">Good morning, John</h2>
+              <p className="lyra-body-md text-lyra-fg-secondary">Here's what's waiting for you today</p>
+            </div>
+          </div>
+
+          <div className="mt-5 rounded-lyra-md bg-lyra-bg-surface-container-subtle p-4">
+            <p className="lyra-body-md text-lyra-fg-default">
+              You have 4 open cases that need attention, and you've already resolved 12 today.
+              Your availability is down a bit compared to your team, but your working time is up.
+              Keep an eye on handle time and aim to wrap responses within SLA windows.
+            </p>
+          </div>
+
+          <Divider className="my-5" />
+
+          <div className="flex gap-3">
+            <Button className="flex-1" onClick={handleGoAvailable}>Go Available</Button>
+            <Button variant="outline" className="flex-1" onClick={handleStartOffline}>Start Offline</Button>
+          </div>
+        </div>
+      </Overlay>
     </div>
   );
 }

@@ -230,7 +230,7 @@ function App() {
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
+    <div className="flex h-screen flex-col overflow-hidden animate-in fade-in-0 duration-500">
       <Header onNavigate={setPage} currentPage={page} />
       <div className="flex flex-1 overflow-hidden bg-lyra-bg-surface-shell">
         <Sidebar open={sidebarOpen} onToggle={handleSidebarToggle} />

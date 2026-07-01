@@ -109,7 +109,7 @@ export function OutboundEngagementPage({
   const [interiorPanelOpen, setInteriorPanelOpen] = useState(false);
 
   return (
-    <main className="flex flex-1 overflow-hidden bg-lyra-bg-surface-base relative">
+    <main className="flex flex-1 overflow-hidden bg-lyra-bg-surface-base relative animate-in fade-in-0 duration-500">
 
       {/* ════ Left side panel ════ */}
       <Panel

@@ -80,8 +80,10 @@ export default {
         "lyra-avatar-default-bg": "var(--lyra-color-avatar-default-bg)",
 
         /* ── Lyra Accent ── */
-        "lyra-accent-slate-strong": "var(--lyra-color-accent-slate-strong)",
-        "lyra-accent-slate-soft":   "var(--lyra-color-accent-slate-soft)",
+        "lyra-accent-slate-strong":  "var(--lyra-color-accent-slate-strong)",
+        "lyra-accent-slate-soft":    "var(--lyra-color-accent-slate-soft)",
+        "lyra-accent-purple-strong": "var(--lyra-color-accent-purple-strong)",
+        "lyra-accent-purple-soft":   "var(--lyra-color-accent-purple-soft)",
 
         "cxone-navy": "#2a2d32",
       },

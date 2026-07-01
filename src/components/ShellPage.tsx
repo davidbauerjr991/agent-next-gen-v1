@@ -46,7 +46,7 @@ export function ShellPage() {
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
 
   return (
-    <main className="flex flex-col flex-1 overflow-hidden bg-lyra-bg-surface-shell h-screen">
+    <main className="flex flex-col flex-1 overflow-hidden bg-lyra-bg-surface-shell h-screen animate-in fade-in-0 duration-500">
 
       {/* ── Page Header ── */}
       <Container className="mx-3 mt-3 shrink-0">

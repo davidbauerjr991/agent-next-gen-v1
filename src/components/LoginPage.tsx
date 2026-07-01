@@ -8,7 +8,7 @@ interface LoginPageProps {
 
 export function LoginPage({ onNavigate }: LoginPageProps) {
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-lyra-bg-surface-shell p-6">
+    <div className="flex h-screen w-screen items-center justify-center bg-lyra-bg-surface-shell p-6 animate-in fade-in-0 duration-500">
       <LoginCard onLaunch={() => onNavigate?.("agent")} />
     </div>
   );
