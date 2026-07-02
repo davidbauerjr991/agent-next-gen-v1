@@ -1127,7 +1127,7 @@ export function AgentNextGenPage({
               {/* Body row: main content + interior panel */}
               <div className="relative flex flex-1 overflow-hidden">
                 <div className="flex flex-1 flex-col min-w-0 overflow-y-auto px-6 py-6">
-                  <div className="w-full max-w-[1200px] mx-auto">
+                  <div className="w-full max-w-[1200px] mx-auto lyra-container-grid-wrap">
                     {/* ── Greeting ── */}
                     <h1 className="lyra-heading-xl text-lyra-fg-default">Good morning, John</h1>
                     <p className="lyra-body-sm text-lyra-fg-secondary mt-1">Last login: Today at 8:42 AM</p>
@@ -1138,7 +1138,7 @@ export function AgentNextGenPage({
                     </p>
 
                     {/* ── Summary cards ── */}
-                    <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+                    <div className="mt-6 lyra-container-grid">
                       {SUMMARY_CARDS.map((card) => (
                         <Container
                           key={card.id}
@@ -1347,7 +1347,16 @@ export function AgentNextGenPage({
           color-mix() instead of a plain `bg-lyra-bg-surface-shell/70`
           opacity modifier because Tailwind can't generate opacity-modified
           utilities for our `var(--lyra-color-*)` tokens (same root cause as
-          the Tag border-color bug — see lyra-ui's PROJECT_SUMMARY.md). ── */}
+          the Tag border-color bug — see lyra-ui's PROJECT_SUMMARY.md).
+
+          The card itself renders via `Container variant="modal"` (same as
+          `LoginCard`) rather than a hand-rolled div with its own background
+          class — it originally used `bg-lyra-bg-surface-base`, which in dark
+          mode (`#1f1f1e`) is noticeably darker than the `bg-lyra-bg-surface-
+          overlay` (`#2e2e2e`) every other modal in the app uses, making this
+          modal look like a different, mismatched shade of dark next to
+          LoginCard's. Always use `Container variant="modal"` for a modal's
+          outer card so every modal in the app shares one background. ── */}
       <Overlay
         variant="light"
         className="bg-[color-mix(in_srgb,var(--lyra-color-bg-surface-shell)_75%,transparent)]"
@@ -1355,7 +1364,7 @@ export function AgentNextGenPage({
         onClose={() => setShowWelcomeModal(false)}
         closeOnBackdropClick={false}
       >
-        <div className="w-[420px] rounded-lyra-lg border border-lyra-border-subtle bg-lyra-bg-surface-base p-6 shadow-lg">
+        <Container variant="modal" className="w-[420px] p-6">
           <div className="flex items-start gap-3">
             <img src={appIcon} alt="" className="h-8 w-8 shrink-0" />
             <div className="flex flex-col gap-1">
@@ -1378,7 +1387,7 @@ export function AgentNextGenPage({
             <Button className="flex-1" onClick={handleGoAvailable}>Go Available</Button>
             <Button variant="outline" className="flex-1" onClick={handleStartOffline}>Start Offline</Button>
           </div>
-        </div>
+        </Container>
       </Overlay>
     </div>
   );

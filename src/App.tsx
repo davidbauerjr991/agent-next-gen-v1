@@ -8,20 +8,23 @@ import { LoginPage } from "@/components/LoginPage";
 
 type Page = "agent-workspace" | "agent" | "outbound" | "login";
 
-/* ── Hash-based routing ── */
+/* ── Hash-based routing ──
+   "login" is now the home/root page (empty hash) — "agent" (the Desk page)
+   moved off root onto its own "#/agent" hash so it's still directly
+   linkable/bookmarkable. */
 const PAGE_HASH: Record<Page, string> = {
-  "agent":           "",
+  "agent":           "#/agent",
   "agent-workspace": "#/agentworkspacepremium",
   "outbound":        "#/outboundengagement",
-  "login":           "#/login",
+  "login":           "",
 };
 
 function pageFromHash(): Page {
   const hash = window.location.hash;
+  if (hash === "#/agent") return "agent";
   if (hash === "#/agentworkspacepremium") return "agent-workspace";
   if (hash === "#/outboundengagement") return "outbound";
-  if (hash === "#/login") return "login";
-  return "agent";
+  return "login";
 }
 
 function useHashRouter(): [Page, (page: Page) => void] {
