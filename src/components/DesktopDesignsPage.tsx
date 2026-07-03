@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState } from "react";
 import {
   RefreshCw,
   Pencil,
@@ -13,9 +13,7 @@ import {
 import {
   Button,
   AiIcon,
-  PageHeader,
-  Panel,
-  TreeMenu,
+  AdminShell,
   Checkbox,
   TabList,
   Tab,
@@ -77,84 +75,10 @@ const records: DesktopRecord[] = [
   { id: 16, name: "Agent Desktop #16", published: true, customerCard: "—", description: "Utilities", createdBy: "Jim Smith", createdDate: "02/23/2025 02:32...", modifiedDate: "02/23/2025 02:32...", version: 27 },
 ];
 
-/* ── Cookie helpers ── */
-function getCookie(name: string): string | null {
-  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : null;
-}
-function setCookie(name: string, value: string) {
-  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; SameSite=Lax`;
-}
-function readBoolCookie(name: string, fallback: boolean): boolean {
-  const val = getCookie(name);
-  if (val === "true") return true;
-  if (val === "false") return false;
-  return fallback;
-}
-
 export function DesktopDesignsPage({ showChip = false, onAiPanelToggle }: { showChip?: boolean; onAiPanelToggle?: () => void }) {
 
-  /* ── Left side panel (Designer nav) ── */
-  const [leftPanelPinned, setLeftPanelPinned] = useState(() => readBoolCookie("lyra_panel_pinned", false));
-  const [leftPanelOpen, setLeftPanelOpen] = useState(() => readBoolCookie("lyra_panel_pinned", false));
-  const leftHoverTimeout = useRef<ReturnType<typeof setTimeout>>();
-
-  const handleLeftToggle = useCallback(() => {
-    if (leftPanelPinned) setLeftPanelOpen((v) => !v);
-  }, [leftPanelPinned]);
-
-  const handleLeftHoverStart = useCallback(() => {
-    if (!leftPanelPinned) { clearTimeout(leftHoverTimeout.current); setLeftPanelOpen(true); }
-  }, [leftPanelPinned]);
-
-  const handleLeftHoverEnd = useCallback(() => {
-    if (!leftPanelPinned) { leftHoverTimeout.current = setTimeout(() => setLeftPanelOpen(false), 300); }
-  }, [leftPanelPinned]);
-
-  const handleLeftPinToggle = useCallback(() => {
-    setLeftPanelPinned((prev) => {
-      const next = !prev;
-      setCookie("lyra_panel_pinned", String(next));
-      setLeftPanelOpen(next);
-      return next;
-    });
-  }, []);
-
-  /* ── Right side panel (PageHeader toggle) ── */
-  const [rightSidePanelOpen, setRightSidePanelOpen] = useState(false);
-  const [rightSidePanelPinned, setRightSidePanelPinned] = useState(false);
-  const rightHoverTimeout = useRef<ReturnType<typeof setTimeout>>();
-
-  /* ── Viewport pin guard ── */
-  const [canPin, setCanPin] = useState(() => window.innerWidth >= 1024);
-  useEffect(() => {
-    const check = () => {
-      const wide = window.innerWidth >= 1024;
-      setCanPin(wide);
-      if (!wide) {
-        setLeftPanelPinned(false);
-        setRightSidePanelPinned(false);
-      }
-    };
-    check();
-    window.addEventListener("resize", check);
-    return () => window.removeEventListener("resize", check);
-  }, []);
-
-  const handleRightHoverStart = useCallback(() => {
-    if (!rightSidePanelPinned) { clearTimeout(rightHoverTimeout.current); setRightSidePanelOpen(true); }
-  }, [rightSidePanelPinned]);
-
-  const handleRightHoverEnd = useCallback(() => {
-    if (!rightSidePanelPinned) { rightHoverTimeout.current = setTimeout(() => setRightSidePanelOpen(false), 300); }
-  }, [rightSidePanelPinned]);
-
-  const handleRightPinToggle = useCallback(() => {
-    if (!canPin) return;
-    setRightSidePanelPinned((prev) => { const next = !prev; setRightSidePanelOpen(next); return next; });
-  }, [canPin]);
-
-  /* ── Interior panel (Toolbar toggle) ── */
+  /* ── Interior panel (Toolbar toggle) — controlled here since it's opened
+     from inside the table toolbar, which lives in AdminShell's children. ── */
   const [interiorPanelOpen, setInteriorPanelOpen] = useState(false);
 
   /* ── Table state ── */
@@ -234,215 +158,162 @@ export function DesktopDesignsPage({ showChip = false, onAiPanelToggle }: { show
   }
 
   return (
-    <main className="flex flex-1 overflow-hidden bg-lyra-bg-surface-base relative animate-in fade-in-0 duration-500">
-
-      {/* ════ Left side panel (Designer nav) ════ */}
-      <Panel
-        variant="side"
-        side="left"
-        open={leftPanelOpen}
-        pinned={leftPanelPinned}
-        headerTitle="Designer"
-        onPinToggle={canPin ? handleLeftPinToggle : undefined}
-        onMouseEnter={!leftPanelPinned ? handleLeftHoverStart : undefined}
-        onMouseLeave={!leftPanelPinned ? handleLeftHoverEnd : undefined}
-      >
-        <TreeMenu className="px-2" items={panelItems} />
-      </Panel>
-
-      {/* ════ Main content column ════ */}
-      <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-
-        {/* ════ Page Header ════ */}
-        <PageHeader
-          title="Desktop Library"
-          panelToggle="left"
-          chip={showChip ? "Active" : undefined}
-          panelPinned={leftPanelPinned}
-          onPanelToggle={handleLeftToggle}
-          onPanelHoverStart={!leftPanelPinned ? handleLeftHoverStart : undefined}
-          onPanelHoverEnd={!leftPanelPinned ? handleLeftHoverEnd : undefined}
-          onInnerPanelHoverStart={!rightSidePanelPinned ? handleRightHoverStart : undefined}
-          onInnerPanelHoverEnd={!rightSidePanelPinned ? handleRightHoverEnd : undefined}
-          actions={
-            <>
-              <Button variant="outline">Secondary</Button>
-              <Button>
-                <Plus className="h-4 w-4 mr-1" strokeWidth={1.5} />
-                New Desktop
-              </Button>
-              <div className="mx-1 h-6 w-px bg-lyra-border-subtle" />
-              <Button variant="outline" onClick={onAiPanelToggle}>
-                <AiIcon className="h-4 w-4" />
-                Ask AI
-              </Button>
-            </>
-          }
-        />
-
-        {/* ════ Tabs ════ */}
-        <TabList className="px-6">
-          <Tab active={activeTab === "library"} onClick={() => setActiveTab("library")}>Custom Desktops</Tab>
-          <Tab active={activeTab === "templates"} onClick={() => setActiveTab("templates")}>Templates</Tab>
-        </TabList>
-
-        {/* ════ Interior panels row ════ */}
-        <div className="flex flex-1 min-h-0 overflow-hidden">
-
-          {/* ════ Main table column ════ */}
-          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-
-            {/* ════ Toolbar ════ */}
-            <TableToolbar
-              className="px-6"
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
-              searchPlaceholder="Quick Search"
-              actionDefs={[
-                { key: "refresh", label: "Refresh", icon: <RefreshCw className="h-4 w-4" strokeWidth={1.5} /> },
-                { key: "edit", label: "Edit", icon: <Pencil className="h-4 w-4" strokeWidth={1.5} />, disabled: selectedIds.size === 0 },
-                { key: "copy", label: "Copy", icon: <Copy className="h-4 w-4" strokeWidth={1.5} />, disabled: selectedIds.size === 0 },
-                { key: "delete", label: "Delete", icon: <Trash2 className="h-4 w-4" strokeWidth={1.5} />, disabled: selectedIds.size === 0 },
-              ]}
-              actions={
-                <ColumnToggle
-                  columns={allColumnDefs}
-                  visibleColumns={visibleCols}
-                  onVisibilityChange={setVisibleCols}
-                />
-              }
-              toolbarPanelToggle="right"
-              onRightPanelToggle={() => setInteriorPanelOpen((v) => !v)}
-            />
-
-            {/* ════ Data Table ════ */}
-            <div className="flex-1 overflow-hidden px-6">
-              <Table>
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead className="w-[40px] shrink-0">
-                      <Checkbox
-                        checked={allSelected ? true : someSelected ? "indeterminate" : false}
-                        onCheckedChange={(checked) => toggleAll(!!checked)}
-                      />
-                    </TableHead>
-                    {columnOrder.map((key) => {
-                      const col = columnConfig[key];
-                      if (col.sortable) {
-                        return (
-                          <SortableTableHead
-                            key={key}
-                            className={col.flex}
-                            sortDirection={dirFor(key as SortKey)}
-                            onSort={() => handleSort(key as SortKey)}
-                            columnKey={key}
-                            dragHandlers={dragHandlers}
-                            isDragOver={dragOverKey === key}
-                          >
-                            {col.label}
-                          </SortableTableHead>
-                        );
-                      }
-                      return (
-                        <TableHead
-                          key={key}
-                          className={col.flex}
-                          draggable
-                          onDragStart={(e) => dragHandlers.onDragStart(e, key)}
-                          onDragOver={(e) => dragHandlers.onDragOver(e, key)}
-                          onDrop={(e) => dragHandlers.onDrop(e, key)}
-                          onDragEnd={dragHandlers.onDragEnd}
-                          onDragLeave={dragHandlers.onDragLeave}
-                          style={dragOverKey === key ? { backgroundColor: "var(--lyra-color-bg-active-moderate)" } : undefined}
-                        >
-                          {col.label}
-                        </TableHead>
-                      );
-                    })}
-                    <TableHead className="w-[48px] shrink-0 sticky right-0 bg-lyra-bg-surface-base" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {paginatedRecords.map((record) => (
-                    <TableRow key={record.id} data-state={selectedIds.has(record.id) ? "selected" : undefined}>
-                      <TableCell className="w-[40px] shrink-0">
-                        <Checkbox checked={selectedIds.has(record.id)} onCheckedChange={() => toggleRow(record.id)} />
-                      </TableCell>
-                      {columnOrder.map((key) => {
-                        const col = columnConfig[key];
-                        if (key === "published") {
-                          return (
-                            <TableCell key={key} className={col.flex}>
-                              {record.published
-                                ? <CircleCheck className="h-5 w-5 text-lyra-status-success-strong" strokeWidth={1.5} />
-                                : <Minus className="h-5 w-5 text-lyra-fg-disabled" strokeWidth={1.5} />}
-                            </TableCell>
-                          );
-                        }
-                        return (
-                          <TableCell key={key} className={`${col.flex}${key === "name" ? " text-lyra-fg-link cursor-pointer hover:underline" : ""}`}>
-                            {String(record[key as keyof DesktopRecord])}
-                          </TableCell>
-                        );
-                      })}
-                      <TableCell className="w-[48px] shrink-0 sticky right-0 bg-lyra-bg-surface-base">
-                        <button className="flex h-7 w-7 items-center justify-center rounded-lyra-sm text-lyra-fg-secondary hover:bg-lyra-bg-surface-shell transition-colors">
-                          <MoreVertical className="h-4 w-4" strokeWidth={1.5} />
-                        </button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-
-            {/* ════ Footer ════ */}
-            <TableFooter
-              className="px-6 shrink-0"
-              currentPage={safePage}
-              totalPages={totalPages}
-              onPageChange={setCurrentPage}
-              rowsPerPage={rowsPerPage}
-              onRowsPerPageChange={(val) => { setRowsPerPage(val); setCurrentPage(1); }}
-              totalRecords={sortedRecords.length}
-              displayStart={displayStart}
-              displayEnd={displayEnd}
-            />
-
-          </div>{/* end main table column */}
-
-          {/* Interior right panel */}
-          <Panel
-            variant="interior"
-            side="right"
-            open={interiorPanelOpen}
-            headerTitle="Details"
-            onClose={() => setInteriorPanelOpen(false)}
-          >
-            <div className="p-4">
-              <p className="lyra-body-md text-lyra-fg-secondary">Panel content goes here.</p>
-            </div>
-          </Panel>
-
-        </div>{/* end interior panels row */}
-      </div>{/* end main content column */}
-
-      {/* ════ Right side panel ════ */}
-      <Panel
-        variant="side"
-        side="right"
-        open={rightSidePanelOpen}
-        pinned={rightSidePanelPinned}
-        headerTitle="Designer"
-        onPinToggle={canPin ? handleRightPinToggle : undefined}
-        onMouseEnter={!rightSidePanelPinned ? handleRightHoverStart : undefined}
-        onMouseLeave={!rightSidePanelPinned ? handleRightHoverEnd : undefined}
-      >
+    <AdminShell
+      storageKeyPrefix="lyra"
+      navTitle="Designer"
+      navItems={panelItems}
+      showPageHeader
+      pageTitle="Desktop Library"
+      pageChip={showChip ? "Active" : undefined}
+      pageActions={
+        <>
+          <Button variant="outline">Secondary</Button>
+          <Button>
+            <Plus className="h-4 w-4 mr-1" strokeWidth={1.5} />
+            New Desktop
+          </Button>
+          <div className="mx-1 h-6 w-px bg-lyra-border-subtle" />
+          <Button variant="outline" onClick={onAiPanelToggle}>
+            <AiIcon className="h-4 w-4" />
+            Ask AI
+          </Button>
+        </>
+      }
+      interiorPanelOpen={interiorPanelOpen}
+      onInteriorPanelClose={() => setInteriorPanelOpen(false)}
+      interiorPanelContent={
+        <div className="p-4">
+          <p className="lyra-body-md text-lyra-fg-secondary">Panel content goes here.</p>
+        </div>
+      }
+      rightPanelContent={
         <div className="p-4">
           <p className="lyra-body-md text-lyra-fg-secondary">Side panel content.</p>
         </div>
-      </Panel>
+      }
+    >
+      {/* ════ Tabs ════ */}
+      <TabList className="px-6">
+        <Tab active={activeTab === "library"} onClick={() => setActiveTab("library")}>Custom Desktops</Tab>
+        <Tab active={activeTab === "templates"} onClick={() => setActiveTab("templates")}>Templates</Tab>
+      </TabList>
 
-    </main>
+      {/* ════ Toolbar ════ */}
+      <TableToolbar
+        className="px-6"
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchPlaceholder="Quick Search"
+        actionDefs={[
+          { key: "refresh", label: "Refresh", icon: <RefreshCw className="h-4 w-4" strokeWidth={1.5} /> },
+          { key: "edit", label: "Edit", icon: <Pencil className="h-4 w-4" strokeWidth={1.5} />, disabled: selectedIds.size === 0 },
+          { key: "copy", label: "Copy", icon: <Copy className="h-4 w-4" strokeWidth={1.5} />, disabled: selectedIds.size === 0 },
+          { key: "delete", label: "Delete", icon: <Trash2 className="h-4 w-4" strokeWidth={1.5} />, disabled: selectedIds.size === 0 },
+        ]}
+        actions={
+          <ColumnToggle
+            columns={allColumnDefs}
+            visibleColumns={visibleCols}
+            onVisibilityChange={setVisibleCols}
+          />
+        }
+        toolbarPanelToggle="right"
+        onRightPanelToggle={() => setInteriorPanelOpen((v) => !v)}
+      />
+
+      {/* ════ Data Table ════ */}
+      <div className="flex-1 overflow-hidden px-6">
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="w-[40px] shrink-0">
+                <Checkbox
+                  checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                  onCheckedChange={(checked) => toggleAll(!!checked)}
+                />
+              </TableHead>
+              {columnOrder.map((key) => {
+                const col = columnConfig[key];
+                if (col.sortable) {
+                  return (
+                    <SortableTableHead
+                      key={key}
+                      className={col.flex}
+                      sortDirection={dirFor(key as SortKey)}
+                      onSort={() => handleSort(key as SortKey)}
+                      columnKey={key}
+                      dragHandlers={dragHandlers}
+                      isDragOver={dragOverKey === key}
+                    >
+                      {col.label}
+                    </SortableTableHead>
+                  );
+                }
+                return (
+                  <TableHead
+                    key={key}
+                    className={col.flex}
+                    draggable
+                    onDragStart={(e) => dragHandlers.onDragStart(e, key)}
+                    onDragOver={(e) => dragHandlers.onDragOver(e, key)}
+                    onDrop={(e) => dragHandlers.onDrop(e, key)}
+                    onDragEnd={dragHandlers.onDragEnd}
+                    onDragLeave={dragHandlers.onDragLeave}
+                    style={dragOverKey === key ? { backgroundColor: "var(--lyra-color-bg-active-moderate)" } : undefined}
+                  >
+                    {col.label}
+                  </TableHead>
+                );
+              })}
+              <TableHead className="w-[48px] shrink-0 sticky right-0 bg-lyra-bg-surface-base" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {paginatedRecords.map((record) => (
+              <TableRow key={record.id} data-state={selectedIds.has(record.id) ? "selected" : undefined}>
+                <TableCell className="w-[40px] shrink-0">
+                  <Checkbox checked={selectedIds.has(record.id)} onCheckedChange={() => toggleRow(record.id)} />
+                </TableCell>
+                {columnOrder.map((key) => {
+                  const col = columnConfig[key];
+                  if (key === "published") {
+                    return (
+                      <TableCell key={key} className={col.flex}>
+                        {record.published
+                          ? <CircleCheck className="h-5 w-5 text-lyra-status-success-strong" strokeWidth={1.5} />
+                          : <Minus className="h-5 w-5 text-lyra-fg-disabled" strokeWidth={1.5} />}
+                      </TableCell>
+                    );
+                  }
+                  return (
+                    <TableCell key={key} className={`${col.flex}${key === "name" ? " text-lyra-fg-link cursor-pointer hover:underline" : ""}`}>
+                      {String(record[key as keyof DesktopRecord])}
+                    </TableCell>
+                  );
+                })}
+                <TableCell className="w-[48px] shrink-0 sticky right-0 bg-lyra-bg-surface-base">
+                  <button className="flex h-7 w-7 items-center justify-center rounded-lyra-sm text-lyra-fg-secondary hover:bg-lyra-bg-surface-shell transition-colors">
+                    <MoreVertical className="h-4 w-4" strokeWidth={1.5} />
+                  </button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+
+      {/* ════ Footer ════ */}
+      <TableFooter
+        className="px-6 shrink-0"
+        currentPage={safePage}
+        totalPages={totalPages}
+        onPageChange={setCurrentPage}
+        rowsPerPage={rowsPerPage}
+        onRowsPerPageChange={(val) => { setRowsPerPage(val); setCurrentPage(1); }}
+        totalRecords={sortedRecords.length}
+        displayStart={displayStart}
+        displayEnd={displayEnd}
+      />
+    </AdminShell>
   );
 }

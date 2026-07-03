@@ -28,8 +28,11 @@ const navItems: NavItem[] = [
 interface SidebarProps {
   open: boolean;
   onToggle: () => void;
+  /** Narrow-viewport hover-to-open overlay mode — same behavior as the
+   *  Desk page's LeftNav (see AgentNextGenPage.tsx's `isNavNarrow`). */
+  overlay?: boolean;
 }
 
-export function Sidebar({ open, onToggle }: SidebarProps) {
-  return <LeftNav items={navItems} open={open} onToggle={onToggle} />;
+export function Sidebar({ open, onToggle, overlay }: SidebarProps) {
+  return <LeftNav items={navItems} open={open} onToggle={onToggle} overlay={overlay} />;
 }
