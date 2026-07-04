@@ -17,7 +17,7 @@ import {
   Button,
   Input,
   LeftNav,
-  NewOutbound,
+  CreateNew,
   Tag,
   Accordion,
   Table,
@@ -37,16 +37,19 @@ import {
   DateRangePicker,
   filterChipVariants,
   Menu,
+  Tooltip,
   type NavItem,
   type SortDirection,
   type DateRange,
-  type NewOutboundItem,
+  type CreateNewOutboundConfig,
   type AgentStatus,
   type AppMenuGroup,
   type AgentNotification,
   type DraggableVariant,
   type MenuEntry,
 } from "@nicecxone/lyra-ui";
+import { CREATE_NEW_AGENTS } from "@nicecxone/lyra-ui/agents-data";
+import { CREATE_NEW_CUSTOMERS } from "@nicecxone/lyra-ui/customers-data";
 import appIcon from "@/assets/app-icon.svg";
 import {
   Monitor,
@@ -91,14 +94,99 @@ function buildAppMenuGroups(onNavigate?: (page: Page) => void): AppMenuGroup[] {
   ];
 }
 
-/* ── New outbound items ── */
+/* ── Create New → Outbound config ──
+   Mirrors lyra-ui's CreateNew "Create New → Outbound" story (see
+   lyra-ui/src/components/__stories__/create-new-outbound-mock.tsx) — only
+   "Outbound" is wired up, the rest render as coming-soon placeholders. Teams
+   and skills below are small, app-specific lists kept local, but the agent
+   and customer "database" records themselves come from lyra-ui's shared
+   fixture files (via the /agents-data and /customers-data aliases in
+   vite.config.ts) so this app's Outbound picker can't quietly drift out of
+   sync with lyra-ui's own story — same records, mapped into the shape
+   `CreateNew` expects exactly like lyra-ui's own mock file does. */
 
-const NEW_OUTBOUND_ITEMS: NewOutboundItem[] = [
-  { label: "Call",     icon: <Phone          className="h-5 w-5" strokeWidth={1.5} /> },
-  { label: "Email",    icon: <Mail           className="h-5 w-5" strokeWidth={1.5} /> },
-  { label: "SMS",      icon: <MessageSquare  className="h-5 w-5" strokeWidth={1.5} /> },
-  { label: "WhatsApp", icon: <MessageCircle  className="h-5 w-5" strokeWidth={1.5} /> },
+function initialsFor(name: string): string {
+  return name
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase();
+}
+
+const OUTBOUND_AGENTS: NonNullable<CreateNewOutboundConfig["groups"][number]["contacts"]> = CREATE_NEW_AGENTS.map((a) => ({
+  id: a.id,
+  name: a.name,
+  initials: initialsFor(a.name),
+  subtitle: a.agentId,
+  avatarClassName: a.avatarClassName,
+  channels: a.channels,
+}));
+
+const OUTBOUND_CUSTOMERS: NonNullable<CreateNewOutboundConfig["groups"][number]["contacts"]> = CREATE_NEW_CUSTOMERS.map((c) => ({
+  id: c.id,
+  name: c.name,
+  initials: initialsFor(c.name),
+  subtitle: c.customerId,
+  avatarClassName: c.avatarClassName,
+  channels: c.channels,
+}));
+
+const OUTBOUND_TEAMS: NonNullable<CreateNewOutboundConfig["groups"][number]["contacts"]> = [
+  { id: "t1", name: "Billing Support",    initials: "BS", subtitle: "TEAM-04", avatarClassName: "bg-lyra-accent-purple-soft text-lyra-accent-purple-strong", channels: ["voice", "email"] },
+  { id: "t2", name: "Tier 2 Escalations", initials: "T2", subtitle: "TEAM-07", avatarClassName: "bg-lyra-accent-red-soft text-lyra-accent-red-strong",       channels: ["voice", "email"] },
 ];
+
+const OUTBOUND_SKILLS: NonNullable<CreateNewOutboundConfig["groups"][number]["contacts"]> = [
+  { id: "s1", name: "Spanish Language",  initials: "ES", subtitle: "SKL-12", avatarClassName: "bg-lyra-accent-green-soft text-lyra-accent-green-strong", channels: ["voice", "email"] },
+  { id: "s2", name: "Technical Support", initials: "TS", subtitle: "SKL-03", avatarClassName: "bg-lyra-accent-blue-soft text-lyra-accent-blue-strong",   channels: ["voice", "email"] },
+];
+
+const OUTBOUND_CONFIG: CreateNewOutboundConfig = {
+  outboundTitle: "New Outbound",
+  groups: [
+    { id: "favorites", label: "Favorites", kind: "favorites", emptyMessage: "No favorites yet" },
+    { id: "agents", label: "Agents", searchPlaceholder: "Search Agents", contacts: OUTBOUND_AGENTS },
+    { id: "teams", label: "Teams", searchPlaceholder: "Search teams", contacts: OUTBOUND_TEAMS },
+    { id: "skills", label: "Skills", searchPlaceholder: "Search skills", contacts: OUTBOUND_SKILLS },
+    { id: "customers", label: "Customers", searchPlaceholder: "Search customers", contacts: OUTBOUND_CUSTOMERS },
+    { id: "dialpad", label: "Dial Pad", kind: "dialpad" },
+  ],
+  defaultGroupId: "agents",
+  channelOptions: [
+    { id: "voice",    label: "Call",     selectLabel: "Voice", icon: <Phone         className="h-5 w-5" strokeWidth={1.5} /> },
+    { id: "email",    label: "Email",                          icon: <Mail          className="h-5 w-5" strokeWidth={1.5} /> },
+    { id: "sms",      label: "SMS",                            icon: <MessageSquare className="h-5 w-5" strokeWidth={1.5} /> },
+    { id: "whatsapp", label: "WhatsApp",                       icon: <MessageCircle className="h-5 w-5" strokeWidth={1.5} /> },
+  ],
+  phoneOptions: [
+    { value: "+14563833329", label: "(456) 383-3329" },
+    { value: "+14565559981", label: "(456) 555-9981" },
+    { value: "+14565550147", label: "(456) 555-0147" },
+  ],
+  skillOptions: [
+    { value: "general", label: "General Support" },
+    { value: "technical", label: "Technical Support" },
+    { value: "billing", label: "Billing" },
+    { value: "sales", label: "Sales" },
+    { value: "escalations", label: "Escalations" },
+    { value: "vip", label: "VIP Support" },
+  ],
+  onQuickDial: (phoneNumber) => {
+    // eslint-disable-next-line no-console
+    console.log("Quick dial:", phoneNumber);
+  },
+  onStartCall: (selection) => {
+    // eslint-disable-next-line no-console
+    console.log(
+      "Start call:",
+      selection.channel,
+      "→",
+      selection.contact.name,
+      `(phone: ${selection.phone}, skill: ${selection.skillId})`
+    );
+  },
+  pageSize: 10,
+};
 
 /* ── Left nav items ── */
 
@@ -1020,15 +1108,17 @@ export function AgentNextGenPage({
               onOpenChange={setNotifOpen}
               renderPanel={false}
             />
-            <button
-              type="button"
-              aria-label="Ask AI"
-              aria-expanded={aiPanelOpen}
-              onClick={() => setAiPanelOpen((v) => !v)}
-              className={`relative flex h-10 w-10 items-center justify-center rounded-lyra-lg text-lyra-fg-default transition-colors hover:bg-lyra-state-hover active:bg-lyra-state-pressed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus ${aiPanelOpen ? "bg-lyra-state-hover" : ""}`}
-            >
-              <AiSparkleIcon />
-            </button>
+            <Tooltip content="Ask AI" placement="bottom" asLabel>
+              <button
+                type="button"
+                aria-label="Ask AI"
+                aria-expanded={aiPanelOpen}
+                onClick={() => setAiPanelOpen((v) => !v)}
+                className={`relative flex h-10 w-10 items-center justify-center rounded-lyra-lg text-lyra-fg-default transition-colors hover:bg-lyra-state-hover active:bg-lyra-state-pressed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus ${aiPanelOpen ? "bg-lyra-state-hover" : ""}`}
+              >
+                <AiSparkleIcon />
+              </button>
+            </Tooltip>
             <AgentProfile
               name="John Smith"
               initials="JS"
@@ -1053,7 +1143,7 @@ export function AgentNextGenPage({
           open={navOpen}
           onToggle={() => setNavOpen((v) => !v)}
           overlay={isNavNarrow}
-          footer={<NewOutbound items={NEW_OUTBOUND_ITEMS} expanded={navOpen} />}
+          header={<CreateNew title="New Outbound" outbound={OUTBOUND_CONFIG} expanded={navOpen} />}
         />
 
         {/* Content area — flex-1 shrinks to give space to docked panels.
