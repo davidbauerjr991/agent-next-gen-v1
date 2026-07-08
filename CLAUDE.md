@@ -5,6 +5,7 @@ This app consumes the shared `lyra-ui` design system via a live source alias (`@
 - Import UI atoms from `@nicecxone/lyra-ui` — never build or reach for a local `src/components/ui/*` reimplementation of something that already exists there.
 - Check `lyra-ui/src/index.ts` and that component's `__stories__` file *before* building anything — reuse the existing component, and match the exact markup shape shown in its story, not just the prop types (e.g. a plain labeled `Checkbox` is a manual `<label>` wrapper around it in most stories, not the `label` prop).
 - Never modify a `lyra-ui` core component from here. If something this app needs doesn't exist yet in `lyra-ui`, that's a signal to add it there — not approximate it locally.
+- When a screenshot or prompt describes a component ambiguously, or nothing in `lyra-ui` visually matches what's shown, ask the user which component to use or whether to build something new — don't guess. If building something new, keep it local to this app; don't add it to `lyra-ui` until the user explicitly asks (see `PROJECT_SUMMARY.md`'s "When a screenshot/prompt doesn't clearly match an existing component").
 - Every modal's outer card uses `Container variant="modal"`, never a hand-rolled div.
 - Use the shared `assets/app-icon.svg` mark for the app logo/smiley — never `CXoneSmiley` or a one-off hand-rolled SVG.
 - Before reaching for a raw Tailwind utility value (spacing, sizing, radius, etc.), check other lyra-ui components/stories first for the established token.

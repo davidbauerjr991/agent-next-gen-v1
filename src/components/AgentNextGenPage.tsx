@@ -15,11 +15,11 @@ import {
   Panel,
   PageHeader,
   Button,
+  Tag,
   Input,
   LeftNav,
   CreateNew,
-  Tag,
-  Accordion,
+  InteractionNavItem,
   Table,
   TableHeader,
   TableBody,
@@ -29,6 +29,10 @@ import {
   SortableTableHead,
   Icon,
   Divider,
+  DonutChart,
+  DashboardCard,
+  DashboardQueue,
+  AgentWelcomeMessage,
   TabList,
   Tab,
   Popover,
@@ -42,6 +46,9 @@ import {
   type SortDirection,
   type DateRange,
   type CreateNewOutboundConfig,
+  type CreateNewOutboundContact,
+  type InteractionChannel,
+  type ChannelType,
   type AgentStatus,
   type AppMenuGroup,
   type AgentNotification,
@@ -57,12 +64,15 @@ import {
   BookUser,
   CalendarDays,
   Settings,
-  Plus,
   Phone,
   PhoneOutgoing,
+  PhoneIncoming,
+  Voicemail,
+  ClipboardList,
   Mail,
   MessageSquare,
   MessageCircle,
+  Share2,
   Clock,
   ArrowDown,
   ArrowUp,
@@ -76,6 +86,8 @@ import {
   RotateCcw,
   UserPlus,
   UserRound,
+  Info,
+  Inbox,
   type LucideIcon,
 } from "lucide-react";
 
@@ -188,6 +200,49 @@ const OUTBOUND_CONFIG: CreateNewOutboundConfig = {
   pageSize: 10,
 };
 
+/* ── Left nav interactions ──
+   Live InteractionNavItem cards launched from CreateNew above — see
+   lyra-ui's AgentNextGenTemplate.stories.tsx for the reference
+   implementation this mirrors. No cards exist until the agent actually
+   starts one; starting a second channel with a contact who already has a
+   card folds it into that same card instead of creating a second one.
+   "Unassign & Dismiss" (any channel's kebab menu) removes just that channel
+   via InteractionNavItem's `onDismissChannel` when others are still open, or
+   the whole card via `onDismiss` when it was the last one — see
+   `handleDismissChannel`/`handleDismissInteraction`. */
+
+/** A channel open within one live interaction — tracks when it started
+ *  (in ticks of the shared clock below) rather than a fixed elapsed string,
+ *  so the rendered `InteractionChannel.elapsed` keeps counting up live. */
+interface TrackedChannel {
+  type: ChannelType;
+  startTick: number;
+  /** Routing skill label for this channel, shown as its body copy — looked
+   *  up from OUTBOUND_CONFIG.skillOptions at start-call time. */
+  preview?: string;
+}
+
+/** One live interaction in the left nav — an agent/customer/team/skill
+ *  contact (or, for a quick-dialed number with no contact record, the
+ *  number itself) plus every channel currently open with them. Keyed by
+ *  contact id (or `quickdial:<number>`) so starting a second channel with
+ *  the same contact adds to this interaction's `channels` instead of
+ *  creating a second card. */
+interface ActiveInteraction {
+  id: string;
+  customerName?: string;
+  channels: TrackedChannel[];
+}
+
+/** Renders a tick count (seconds since the channel/interaction started) as
+ *  the "MM:SS" format InteractionNavItem's `elapsed` prop expects. */
+function formatElapsedTime(totalSeconds: number): string {
+  const clamped = Math.max(0, totalSeconds);
+  const mm = Math.floor(clamped / 60);
+  const ss = clamped % 60;
+  return `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+}
+
 /* ── Left nav items ── */
 
 const NAV_ITEMS: NavItem[] = [
@@ -245,7 +300,12 @@ interface LatestContact {
   id: string;
   name: string;
   status: "open" | "closed";
-  description: string;
+  /** Rendered left of the name in the accordion trigger row — matches the queue's channel type (chat/voice/voicemail/task). */
+  icon: LucideIcon;
+  /** Drives both the body copy ("{N} contacts in queue") and the "Contacts" metric at the end of the row, so the two numbers can't drift apart. */
+  contactsCount: number;
+  /** Drives the "Skills" metric at the end of the row. */
+  skillsCount: number;
   channel: string;
   wait: string;
   caseId: string;
@@ -272,6 +332,24 @@ const RESOLUTION_TIMES = ["0 sec", "12 sec", "45 sec", "1 min", "2 min", "3 min"
    interaction's kebab menu should offer "Assign To Me" (only when it isn't
    already his). */
 const CURRENT_AGENT_NAME = "John Smith";
+const [CURRENT_AGENT_FIRST_NAME, CURRENT_AGENT_LAST_NAME] = CURRENT_AGENT_NAME.split(" ");
+
+/* Home tab greeting — "Good morning/afternoon/evening" based on the
+   visitor's actual local time (not the static "Good morning" the welcome
+   modal below always shows), read fresh on every render. */
+function getGreetingPeriod(): "morning" | "afternoon" | "evening" {
+  const hour = new Date().getHours();
+  if (hour < 12) return "morning";
+  if (hour < 18) return "afternoon";
+  return "evening";
+}
+
+/* Welcome modal — last login timestamp, assigned-skills count, and live
+   online/available teammate counts shown under the greeting. */
+const WELCOME_MODAL_LAST_LOGIN = "Today at 8:42 AM";
+const AGENT_SKILLS_COUNT = 3;
+const TEAMMATES_ONLINE_COUNT = 8;
+const TEAMMATES_AVAILABLE_COUNT = 5;
 
 const INTERACTION_OWNERS = [
   "John Smith",
@@ -324,51 +402,79 @@ function buildInteractions(seed: number, contactStatus: "open" | "closed", count
   });
 }
 
+/* ── Queue widget side panel (drill-down) ──
+   Clicking one of the four home-tab queue widgets opens the interior panel
+   with this queue's own skills — e.g. "Digital" breaks down into its own
+   channels (UX Chat, UX Email, UX SMS, Social Support). Each row shows an
+   icon matching its own label (not a single icon reused across every row),
+   how many contacts are waiting, the longest wait time, and — per explicit
+   confirmation — the same Available/Working/Unavailable agent breakdown
+   the Activity/Productivity cards already use: same icons
+   (CheckCircle2/CircleDot/MinusCircle), same success/warning/critical
+   colors, same left-to-right order, just rendered as compact circular
+   `Icon` badges here instead of a donut or bar.
+
+   Defined before `LATEST_CONTACTS` (rather than after, as it originally
+   was) so each queue widget's `skillsCount` can be derived from this
+   list's own length — see the comment on `LATEST_CONTACTS` below. */
+interface QueueSubItem {
+  id: string;
+  label: string;
+  icon: LucideIcon;
+  inQueueCount: number;
+  wait: string;
+  available: number;
+  working: number;
+  unavailable: number;
+}
+
+const QUEUE_SUB_ITEMS: Record<string, QueueSubItem[]> = {
+  "1": [
+    { id: "d1", label: "UX Chat",         icon: MessageSquare, inQueueCount: 2, wait: "3m 5s", available: 3, working: 1, unavailable: 0 },
+    { id: "d2", label: "UX Email",        icon: Mail,          inQueueCount: 2, wait: "3m 5s", available: 3, working: 1, unavailable: 0 },
+    { id: "d3", label: "UX SMS",          icon: MessageCircle, inQueueCount: 2, wait: "3m 5s", available: 3, working: 1, unavailable: 0 },
+    { id: "d4", label: "Social Support",  icon: Share2,        inQueueCount: 2, wait: "3m 5s", available: 3, working: 1, unavailable: 0 },
+  ],
+  "2": [
+    { id: "v1", label: "AKR_Phone_IB",              icon: PhoneIncoming, inQueueCount: 0, wait: "0s", available: 0, working: 0, unavailable: 1 },
+    { id: "v2", label: "AKR_Phone_IB_Sales",        icon: PhoneIncoming, inQueueCount: 0, wait: "0s", available: 0, working: 0, unavailable: 1 },
+    { id: "v3", label: "Auto Attendant",            icon: PhoneIncoming, inQueueCount: 0, wait: "0s", available: 0, working: 0, unavailable: 1 },
+    { id: "v4", label: "Auto Inbound",               icon: PhoneIncoming, inQueueCount: 0, wait: "0s", available: 0, working: 0, unavailable: 1 },
+    { id: "v5", label: "KJ_Inbound_Phone",          icon: PhoneIncoming, inQueueCount: 0, wait: "0s", available: 1, working: 0, unavailable: 1 },
+    { id: "v6", label: "mojo_finance_voice_support", icon: PhoneIncoming, inQueueCount: 0, wait: "0s", available: 0, working: 0, unavailable: 1 },
+  ],
+  "3": [
+    { id: "vm1", label: "UX Voicemail",  icon: Voicemail, inQueueCount: 3, wait: "15m", available: 1, working: 0, unavailable: 1 },
+    { id: "vm2", label: "After-Hours VM", icon: Voicemail, inQueueCount: 0, wait: "0s",  available: 0, working: 0, unavailable: 0 },
+  ],
+  "4": [
+    { id: "w1", label: "Case Management", icon: ClipboardList, inQueueCount: 4, wait: "30m", available: 2, working: 3, unavailable: 0 },
+    { id: "w2", label: "Escalations",     icon: ClipboardList, inQueueCount: 1, wait: "10m", available: 1, working: 1, unavailable: 0 },
+    { id: "w3", label: "Billing Review",  icon: ClipboardList, inQueueCount: 0, wait: "0s",  available: 1, working: 0, unavailable: 0 },
+  ],
+};
+
+/* Random contact-in-queue counts for each queue widget — regenerated on
+   every page load/module evaluation (not on every re-render, since this
+   only runs once here rather than inside a component). Range is just a
+   plausible depth, not tied to any real data. Skills counts, by contrast,
+   are NOT randomized — a queue's skill count is a real, fixed quantity (how
+   many skills are actually assigned to it), so each one is instead derived
+   directly from `QUEUE_SUB_ITEMS[id].length`, the same list the side panel
+   renders — the two numbers can never drift apart since they're the same
+   underlying list. */
+function randomContactsCount(): number {
+  return Math.floor(Math.random() * 40) + 1;
+}
+
 const LATEST_CONTACTS: LatestContact[] = [
-  { id: "1", name: "Lily Chen",          status: "open",   description: "Unaccompanied minor (age 11) stuck at ORD — connecting flight canceled",              channel: "Atlas",        wait: "1m",  caseId: "CST-21009", interactions: buildInteractions(1, "open", 3) },
-  { id: "2", name: "Amara Okafor",       status: "open",   description: "Pregnant traveler (32 weeks) — needs medical clearance and accommodation",             channel: "Atlas",        wait: "3m",  caseId: "CST-21016", interactions: buildInteractions(2, "open", 5) },
-  { id: "3", name: "Priya Sharma-Patel", status: "closed", description: "Pediatric nurse — must reach children's hospital for emergency shift coverage",        channel: "Atlas",        wait: "2m",  caseId: "CST-21028", interactions: buildInteractions(3, "closed", 1) },
-  { id: "4", name: "Alex Sanderson",     status: "open",   description: "Mechanical delay on VY-4450 — LHR→FCO connection at risk, partner upgrade exceeds auth threshold", channel: "Emily", wait: "3m",  caseId: "CST-15001", interactions: buildInteractions(4, "open", 7) },
-  { id: "5", name: "Rachel Nguyen",      status: "closed", description: "Family of 4 with infant — connecting flight MSP→ORD canceled",                         channel: "Atlas",        wait: "12m", caseId: "CST-21001", interactions: buildInteractions(5, "closed", 2) },
-  { id: "6", name: "Richard Takahashi",  status: "open",   description: "Executive missing board meeting in NYC — needs earliest possible rebooking",           channel: "Rebooking Bot", wait: "6m",  caseId: "CST-21004", interactions: buildInteractions(6, "open", 4) },
-  { id: "7", name: "Fatima Al-Rashidi",  status: "closed", description: "Business traveler — critical client presentation in Dallas tomorrow",                  channel: "Rebooking Bot", wait: "15m", caseId: "CST-21012", interactions: buildInteractions(7, "closed", 6) },
+  { id: "1", name: "Digital",       icon: MessageSquare, status: "open",   contactsCount: randomContactsCount(), skillsCount: QUEUE_SUB_ITEMS["1"].length, channel: "Atlas", wait: "1m",  caseId: "CST-21009", interactions: buildInteractions(1, "open", 3) },
+  { id: "2", name: "Inbound Voice", icon: PhoneIncoming, status: "open",   contactsCount: randomContactsCount(), skillsCount: QUEUE_SUB_ITEMS["2"].length, channel: "Atlas", wait: "3m",  caseId: "CST-21016", interactions: buildInteractions(2, "open", 5) },
+  { id: "3", name: "Voicemail",     icon: Voicemail,     status: "closed", contactsCount: randomContactsCount(), skillsCount: QUEUE_SUB_ITEMS["3"].length, channel: "Atlas", wait: "2m",  caseId: "CST-21028", interactions: buildInteractions(3, "closed", 1) },
+  { id: "4", name: "Work Item",     icon: ClipboardList, status: "open",   contactsCount: randomContactsCount(), skillsCount: QUEUE_SUB_ITEMS["4"].length, channel: "Emily", wait: "3m",  caseId: "CST-15001", interactions: buildInteractions(4, "open", 7) },
 ];
 
 /* ── Home screen summary cards ── */
-
-interface SummaryCard {
-  id: string;
-  title: string;
-  icon: LucideIcon;
-  iconBackground: "active" | "success" | "info";
-  headerAction?: React.ReactNode;
-  rows: { label: string; value: string; valueClassName?: string }[];
-  footerLabel: string;
-  footerPrimary: string;
-  footerSecondary?: string;
-  footerSecondaryClassName?: string;
-}
-
-const SUMMARY_CARDS: SummaryCard[] = [
-  {
-    id: "schedule",
-    title: "Schedule",
-    icon: CalendarDays,
-    iconBackground: "active",
-    headerAction: (
-      <Button variant="outline" size="md">
-        View Schedule
-      </Button>
-    ),
-    rows: [
-      { label: "Total Events", value: "6" },
-      { label: "Callbacks", value: "3", valueClassName: "text-lyra-status-warning-strong" },
-    ],
-    footerLabel: "Next up:",
-    footerPrimary: "Customer Callback",
-    footerSecondary: "09:00 AM",
-  },
-];
 
 type DateFilterValue = "today" | "yesterday" | "last7" | "custom";
 
@@ -383,6 +489,57 @@ const PERFORMANCE_DATA_BY_RANGE: Record<
   last7:     { casesResolved: "104", csat: "4.7", handleTime: "8m 50s", improvement: "11% improvement" },
   custom:    { casesResolved: "—",   csat: "—",   handleTime: "—",      improvement: "Select a range" },
 };
+
+/* Channel Type breakdown (Performance card) — Inbound/Outbound call counts,
+   "you" vs. "team", per date range. Same static-meta + per-range-values
+   split as `PRODUCTIVITY_STATUS_META`/`PRODUCTIVITY_DATA_BY_RANGE` below,
+   and rendered with that same row shape (icon+label+value, indented "Team"
+   comparison line beneath) rather than a literal `Table` — a plain stacked
+   list reads fine for 2-3 rows and keeps this card visually consistent
+   with the Productivity card right next to it. */
+
+type ChannelTypeId = "inbound" | "outbound";
+
+interface ChannelTypeMeta {
+  id: ChannelTypeId;
+  label: string;
+  icon: LucideIcon;
+}
+
+const CHANNEL_TYPE_META: ChannelTypeMeta[] = [
+  { id: "inbound",  label: "Inbound",  icon: PhoneIncoming },
+  { id: "outbound", label: "Outbound", icon: PhoneOutgoing },
+];
+
+interface ChannelTypeValue {
+  you: number;
+  team: number;
+}
+
+const CHANNEL_TYPE_DATA_BY_RANGE: Record<DateFilterValue, Record<ChannelTypeId, ChannelTypeValue>> = {
+  // Matches the reference screenshot's all-zero state — no calls logged yet today.
+  today: {
+    inbound:  { you: 0, team: 0 },
+    outbound: { you: 0, team: 0 },
+  },
+  yesterday: {
+    inbound:  { you: 14, team: 162 },
+    outbound: { you: 9,  team: 98  },
+  },
+  last7: {
+    inbound:  { you: 88, team: 1024 },
+    outbound: { you: 52, team: 640  },
+  },
+  custom: {
+    inbound:  { you: 0, team: 0 },
+    outbound: { you: 0, team: 0 },
+  },
+};
+
+/** "% of Team" for a single row — you as a share of the team total. 0 when the team total is 0 (avoids dividing by zero). */
+function percentOfTeam(you: number, team: number): number {
+  return team > 0 ? Math.round((you / team) * 100) : 0;
+}
 
 /* ── Productivity breakdown card (agent state duration bars + date filter chip) ──
    Replaces the third summary card slot — same Container/header styling as the
@@ -406,6 +563,15 @@ const PRODUCTIVITY_STATUS_META: ProductivityStatusMeta[] = [
   { id: "available",   label: "Available",   icon: CheckCircle2, iconColorClassName: "text-lyra-status-success-strong" },
   { id: "working",     label: "Working",     icon: CircleDot,    iconColorClassName: "text-lyra-status-warning-strong" },
   { id: "unavailable", label: "Unavailable", icon: MinusCircle,  iconColorClassName: "text-lyra-status-critical-strong" },
+];
+
+/* Sub-state breakdown shown in the info tooltip on the Productivity card's
+   Unavailable row — which specific unavailable codes made up that time. */
+const UNAVAILABLE_STATE_BREAKDOWN: { label: string; percent: number }[] = [
+  { label: "Bio Break", percent: 100 },
+  { label: "Break",     percent: 0 },
+  { label: "Meeting",   percent: 0 },
+  { label: "Team",      percent: 100 },
 ];
 
 interface ProductivityStatusValue {
@@ -446,9 +612,16 @@ const DATE_FILTER_OPTIONS: { value: DateFilterValue; label: string }[] = [
 ];
 
 /* Single-select date filter chip — same trigger styling as FilterChip's
-   "active" variant (via the exported filterChipVariants), but a RadioGroup
-   (not checkboxes) in the popover since only one range can be selected at a
-   time. Selecting "Custom" reveals a DateRangePicker beneath the radio list. */
+   "default" (neutral) variant, via the exported filterChipVariants, so it
+   matches the same gray chip look FilterChip itself uses whenever nothing
+   is actively narrowing/differing from the norm — including DashboardCard's
+   own header FilterChip in its unselected state. This picker always has
+   *some* range selected ("Today" by default), but that's just its resting
+   state, not a filter being "applied" the way FilterChip's blue "active"
+   variant signals — so it shouldn't render permanently blue the way
+   `variant: "active"` did before. Uses a RadioGroup (not checkboxes) in the
+   popover since only one range can be selected at a time. Selecting
+   "Custom" reveals a DateRangePicker beneath the radio list. */
 function DateFilterChip({ onValueChange }: { onValueChange?: (value: DateFilterValue) => void }) {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState<DateFilterValue>("today");
@@ -483,7 +656,7 @@ function DateFilterChip({ onValueChange }: { onValueChange?: (value: DateFilterV
         </div>
       }
     >
-      <button type="button" className={cn(filterChipVariants({ variant: "active" }), "rounded-lyra-md")}>
+      <button type="button" className={cn(filterChipVariants({ variant: "default" }), "rounded-lyra-md")}>
         <span className="inline-flex items-baseline gap-1">
           <span className="lyra-body-md-emphasis whitespace-nowrap">Date:</span>
           <span className="lyra-body-md truncate">{selectedLabel}</span>
@@ -494,12 +667,39 @@ function DateFilterChip({ onValueChange }: { onValueChange?: (value: DateFilterV
   );
 }
 
+/* ── Activity card (donut chart) ──
+   Replaces the old Schedule summary card. Reuses the same Available/Working/
+   Unavailable status metadata and values as the ring chart at the bottom of
+   the Productivity card below (see `ACTIVITY_STATUS_COLORS`), so the two
+   stay visually consistent — same colors, same percentages. */
+const ACTIVITY_STATUS_COLORS: Record<ProductivityStatusId, { dotClassName: string; colorVar: string }> = {
+  available:   { dotClassName: "bg-lyra-status-success-strong",  colorVar: "var(--lyra-color-status-success-strong)" },
+  working:     { dotClassName: "bg-lyra-status-warning-strong",  colorVar: "var(--lyra-color-status-warning-strong)" },
+  unavailable: { dotClassName: "bg-lyra-status-critical-strong", colorVar: "var(--lyra-color-status-critical-strong)" },
+};
+
+/* Productivity breakdown card — agent state duration bars (Available/
+   Working/Unavailable, each with a "Team" comparison line beneath) plus,
+   below all three rows, the same ring-chart + legend that used to be its
+   own standalone "Activity" card. Folded into this card (rather than kept
+   separate) on request — the ring visualizes the exact same
+   Available/Working/Unavailable percentages already listed above it, so it
+   reads as one more view of this card's own data instead of a second card
+   repeating it. Both the rows and the ring now share the one live
+   `dateFilter`/`values` this card already owns — the ring is no longer
+   pinned to "today" the way the standalone Activity card was. */
 function PerformanceBreakdownCard() {
   const [dateFilter, setDateFilter] = useState<DateFilterValue>("today");
   const values = PRODUCTIVITY_DATA_BY_RANGE[dateFilter];
+  const ringData = PRODUCTIVITY_STATUS_META.map((meta) => ({
+    id: meta.id,
+    label: meta.label,
+    percent: values[meta.id].percent,
+    ...ACTIVITY_STATUS_COLORS[meta.id],
+  }));
 
   return (
-    <Container
+    <DashboardCard
       variant="neutral-subtle"
       headerTitle="Productivity"
       headerIcon={<Icon icon={Gauge} size="md" background="info" shape="rounded" decorative />}
@@ -516,6 +716,27 @@ function PerformanceBreakdownCard() {
                   <meta.icon className={cn("h-4 w-4", meta.iconColorClassName)} strokeWidth={1.5} />
                   {meta.label}
                   <span className="lyra-body-sm text-lyra-fg-secondary font-normal">({row.percent}%)</span>
+                  {meta.id === "unavailable" && (
+                    <Tooltip
+                      placement="right"
+                      content={
+                        <div className="flex flex-col gap-1">
+                          {UNAVAILABLE_STATE_BREAKDOWN.map((state) => (
+                            <span key={state.label} className="lyra-body-sm text-lyra-fg-default whitespace-nowrap">
+                              {state.label} ({state.percent}%)
+                            </span>
+                          ))}
+                        </div>
+                      }
+                    >
+                      <span className="inline-flex items-center text-lyra-fg-secondary hover:text-lyra-fg-action transition-colors cursor-default">
+                        <Info className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
+                        <span className="sr-only">
+                          Unavailable breakdown: {UNAVAILABLE_STATE_BREAKDOWN.map((s) => `${s.label} (${s.percent}%)`).join(", ")}
+                        </span>
+                      </span>
+                    </Tooltip>
+                  )}
                 </span>
                 <span className="lyra-body-md-emphasis tabular-nums text-lyra-fg-default">{row.time}</span>
               </div>
@@ -527,20 +748,47 @@ function PerformanceBreakdownCard() {
             </div>
           );
         })}
+
+        <Divider />
+
+        {/* Ring chart + legend — same Available/Working/Unavailable data as
+            the rows above, just visualized as a ring instead of stacked bars. */}
+        <div className="flex items-center gap-6">
+          <div className="h-[120px] w-[120px] shrink-0">
+            <DonutChart
+              data={ringData.map((d) => ({ label: d.label, value: d.percent, colorVar: d.colorVar }))}
+            />
+          </div>
+          <div className="flex flex-1 flex-col gap-2.5">
+            {ringData.map((d) => (
+              <div key={d.id} className="flex items-center justify-between gap-3">
+                <span className="inline-flex items-center gap-2 lyra-body-md text-lyra-fg-secondary">
+                  <span className={cn("h-2.5 w-2.5 rounded-full", d.dotClassName)} aria-hidden="true" />
+                  {d.label}
+                </span>
+                <span className="lyra-heading-sm text-lyra-fg-default">{d.percent}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
-    </Container>
+    </DashboardCard>
   );
 }
 
 /* Performance summary card — mirrors PerformanceBreakdownCard's pattern:
    owns its own date filter state and looks up dummy data per range so the
-   Cases Resolved / CSAT / Handle Time numbers change when a range is picked. */
+   Cases Resolved / CSAT numbers — and the Channel Type breakdown below
+   them — change when a range is picked. */
 function PerformanceSummaryCard() {
   const [dateFilter, setDateFilter] = useState<DateFilterValue>("today");
   const data = PERFORMANCE_DATA_BY_RANGE[dateFilter];
+  const channelData = CHANNEL_TYPE_DATA_BY_RANGE[dateFilter];
+  const overallYou = CHANNEL_TYPE_META.reduce((sum, meta) => sum + channelData[meta.id].you, 0);
+  const overallTeam = CHANNEL_TYPE_META.reduce((sum, meta) => sum + channelData[meta.id].team, 0);
 
   return (
-    <Container
+    <DashboardCard
       variant="neutral-subtle"
       headerTitle="Performance"
       headerIcon={<Icon icon={TrendingUp} size="md" background="success" shape="rounded" decorative />}
@@ -556,13 +804,243 @@ function PerformanceSummaryCard() {
           <span className="lyra-heading-sm text-lyra-status-success-strong">{data.csat}</span>
         </div>
         <Divider />
-        <div className="flex flex-col gap-0.5">
-          <span className="lyra-body-sm text-lyra-fg-secondary">Handle Time:</span>
-          <span className="lyra-body-md-emphasis text-lyra-fg-default">{data.handleTime}</span>
-          <span className="lyra-body-sm text-lyra-status-success-strong truncate">{data.improvement}</span>
+
+        {/* Channel Type breakdown — same row shape as PerformanceBreakdownCard's
+            Productivity rows (icon+label+value, indented "Team" comparison line
+            beneath) rather than a Table, so this section reads consistently with
+            the card right next to it. */}
+        <span className="lyra-body-sm-emphasis text-lyra-fg-secondary">Channel Type</span>
+        <div className="flex flex-col gap-4">
+          {CHANNEL_TYPE_META.map((meta) => {
+            const row = channelData[meta.id];
+            const pct = percentOfTeam(row.you, row.team);
+            return (
+              <div key={meta.id} className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="inline-flex items-center gap-2 lyra-body-md-emphasis text-lyra-fg-default">
+                    <meta.icon className="h-4 w-4 text-lyra-fg-secondary" strokeWidth={1.5} />
+                    {meta.label}
+                  </span>
+                  <span className="lyra-body-md-emphasis tabular-nums text-lyra-fg-default">{row.you}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3 pl-6">
+                  <span className="lyra-body-sm text-lyra-fg-secondary">Team ({pct}% of Team)</span>
+                  <span className="lyra-body-sm tabular-nums text-lyra-fg-secondary">{row.team}</span>
+                </div>
+              </div>
+            );
+          })}
+
+          <Divider />
+
+          {/* Overall — the summed total, same row shape but with no icon and no indent on its own Team line (it's a total, not a per-channel comparison). */}
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center justify-between gap-3">
+              <span className="lyra-body-md-emphasis text-lyra-fg-default">Overall</span>
+              <span className="lyra-body-md-emphasis tabular-nums text-lyra-fg-default">{overallYou}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="lyra-body-sm text-lyra-fg-secondary">Team ({percentOfTeam(overallYou, overallTeam)}% of Team)</span>
+              <span className="lyra-body-sm tabular-nums text-lyra-fg-secondary">{overallTeam}</span>
+            </div>
+          </div>
         </div>
       </div>
-    </Container>
+    </DashboardCard>
+  );
+}
+
+/* ── Contact History card (home tab, below Performance/Productivity) ──
+   A recent-customer-contacts summary — name, resolution status, an optional
+   "Redial" action for voice contacts, a one-line case summary, case ID, and
+   (right-aligned) the channel + how long ago it happened, plus the handle
+   time. The base 5 rows (`CONTACT_HISTORY`) are from a screenshot of
+   exactly this content, so those values are that screenshot's own data,
+   not derived from any other part of the app. Composed entirely from
+   existing lyra-ui atoms — `DashboardCard` for the card shell
+   (`headerActions` holding the same `DateFilterChip` the Performance/
+   Productivity cards' own headers use, not a one-off "View All" button, so
+   this card's date control matches theirs exactly), `Tag` for the status
+   pill (`variant="success"` for Resolved, `"warning"` for Transferred —
+   the same bordered-tint look CONTRIBUTING.md's Tag entry documents), and
+   a plain `Button variant="outline"` for "Redial" (reusing the same
+   `PhoneOutgoing` icon `InteractionRowActions`' kebab menu already uses for
+   its own "Redial" action, rather than inventing a second icon for the
+   same meaning) — no hand-rolled badge/pill markup.
+
+   Row set is driven by the selected date range (`CONTACT_HISTORY_BY_RANGE`):
+   "Today" (the default on login — nothing has happened yet this session)
+   and "Custom" (no range chosen yet) both render empty, showing a
+   "Nothing to Display" placeholder instead of an empty list; "Yesterday"
+   shows the base 5 rows; "Last 7 days" widens that with 5 more rows pulled
+   from the shared customer "database" (`CREATE_NEW_CUSTOMERS`, the same
+   fixture `OUTBOUND_CUSTOMERS` above already sources from) rather than
+   inventing unrelated names, so a wider range reads as more of the same
+   real customer base. */
+
+interface ContactHistoryEntry {
+  id: string;
+  name: string;
+  statusLabel: string;
+  statusVariant: "success" | "warning";
+  /** Voice contacts only — shows a "Redial" action next to the status tag. */
+  redial: boolean;
+  description: string;
+  caseId: string;
+  channelType: "voice" | "chat" | "email";
+  channelLabel: string;
+  timeAgo: string;
+  duration: string;
+}
+
+const CONTACT_HISTORY_CHANNEL_ICON: Record<ContactHistoryEntry["channelType"], LucideIcon> = {
+  voice: Phone,
+  chat:  MessageCircle,
+  email: Mail,
+};
+
+const CONTACT_HISTORY: ContactHistoryEntry[] = [
+  {
+    id: "ch1", name: "Nathan Cole", statusLabel: "Resolved", statusVariant: "success", redial: true,
+    description: "Customer was locked out after 5 failed attempts. Verified identity via KBA, reset credentials, and confirmed access restored.",
+    caseId: "CST-22841", channelType: "voice", channelLabel: "Voice", timeAgo: "8m ago", duration: "8m 14s",
+  },
+  {
+    id: "ch2", name: "Priya Shah", statusLabel: "Resolved", statusVariant: "success", redial: false,
+    description: "Duplicate charge dispute — $89.99 refund issued",
+    caseId: "CST-30164", channelType: "chat", channelLabel: "Chat", timeAgo: "34m ago", duration: "12m 02s",
+  },
+  {
+    id: "ch3", name: "Omar Farooq", statusLabel: "Resolved", statusVariant: "success", redial: false,
+    description: "Plan upgrade confirmation & feature overview",
+    caseId: "CST-16823", channelType: "email", channelLabel: "Email", timeAgo: "2h ago", duration: "6m 30s",
+  },
+  {
+    id: "ch4", name: "Lauren Briggs", statusLabel: "Transferred", statusVariant: "warning", redial: true,
+    description: "Escalated fraud investigation — 4 suspicious transactions",
+    caseId: "CST-27760", channelType: "voice", channelLabel: "Voice", timeAgo: "5h ago", duration: "22m 47s",
+  },
+  {
+    id: "ch5", name: "Mei Tanaka", statusLabel: "Resolved", statusVariant: "success", redial: false,
+    description: "Shipping delay — expedited replacement dispatched",
+    caseId: "CST-31045", channelType: "chat", channelLabel: "Chat", timeAgo: "1d ago", duration: "9m 15s",
+  },
+];
+
+const CONTACT_HISTORY_CHANNEL_LABEL: Record<ContactHistoryEntry["channelType"], string> = {
+  voice: "Voice",
+  chat: "Chat",
+  email: "Email",
+};
+
+/** Maps a customer's supported `ChannelType[]` (from `CREATE_NEW_CUSTOMERS`,
+ *  e.g. `["email", "sms", "voice"]`) down to Contact History's own narrower
+ *  channel grouping — voice takes priority (it's what "Redial" needs),
+ *  then sms/whatsapp both read as "Chat", falling back to "Email" (every
+ *  customer record includes it). */
+function contactHistoryChannelType(channels: ChannelType[]): ContactHistoryEntry["channelType"] {
+  if (channels.includes("voice")) return "voice";
+  if (channels.includes("sms") || channels.includes("whatsapp")) return "chat";
+  return "email";
+}
+
+// Fixed customer indexes + content templates for the 5 extra "Last 7 days"
+// rows — deterministic (not `Math.random()`), matching the rest of this
+// file's dummy-data convention. Names/case IDs come from the real
+// `CREATE_NEW_CUSTOMERS` records at these indexes; only the description/
+// status/timing are authored here.
+const EXTENDED_CONTACT_HISTORY_CUSTOMER_INDEXES = [5, 12, 19, 26, 33];
+const EXTENDED_CONTACT_HISTORY_TEMPLATES: {
+  statusLabel: string;
+  statusVariant: "success" | "warning";
+  description: string;
+  timeAgo: string;
+  duration: string;
+}[] = [
+  { statusLabel: "Resolved", statusVariant: "success", description: "Password reset — identity verified via KBA, access restored", timeAgo: "1d ago", duration: "7m 40s" },
+  { statusLabel: "Resolved", statusVariant: "success", description: "Billing question — walked through recent charges, no refund needed", timeAgo: "1d ago", duration: "5m 18s" },
+  { statusLabel: "Transferred", statusVariant: "warning", description: "Product setup issue escalated to Tier 2 for configuration support", timeAgo: "2d ago", duration: "14m 05s" },
+  { statusLabel: "Resolved", statusVariant: "success", description: "Subscription cancellation request — retention offer accepted", timeAgo: "3d ago", duration: "10m 52s" },
+  { statusLabel: "Resolved", statusVariant: "success", description: "Shipping delay follow-up — updated delivery window provided", timeAgo: "4d ago", duration: "4m 27s" },
+];
+
+const EXTENDED_CONTACT_HISTORY: ContactHistoryEntry[] = EXTENDED_CONTACT_HISTORY_CUSTOMER_INDEXES.map((customerIndex, i) => {
+  const customer = CREATE_NEW_CUSTOMERS[customerIndex];
+  const channelType = contactHistoryChannelType(customer.channels);
+  return {
+    id: `ch-ext-${customer.id}`,
+    name: customer.name,
+    // `customer.customerId` is already "CST-…"-prefixed — use it as-is
+    // rather than re-prefixing into "CST-CST-…".
+    caseId: customer.customerId,
+    channelType,
+    channelLabel: CONTACT_HISTORY_CHANNEL_LABEL[channelType],
+    redial: channelType === "voice",
+    ...EXTENDED_CONTACT_HISTORY_TEMPLATES[i],
+  };
+});
+
+const CONTACT_HISTORY_BY_RANGE: Record<DateFilterValue, ContactHistoryEntry[]> = {
+  today: [],
+  yesterday: CONTACT_HISTORY,
+  last7: [...CONTACT_HISTORY, ...EXTENDED_CONTACT_HISTORY],
+  custom: [],
+};
+
+function ContactHistoryCard({ onRedial }: { onRedial?: (entry: ContactHistoryEntry) => void }) {
+  const [dateFilter, setDateFilter] = useState<DateFilterValue>("today");
+  const entries = CONTACT_HISTORY_BY_RANGE[dateFilter];
+
+  return (
+    <DashboardCard
+      variant="neutral-subtle"
+      headerTitle="Contact History"
+      headerActions={<DateFilterChip onValueChange={setDateFilter} />}
+    >
+      {entries.length === 0 ? (
+        <div className="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
+          <Inbox className="h-6 w-6 text-lyra-fg-secondary" strokeWidth={1.5} aria-hidden="true" />
+          <span className="lyra-body-md text-lyra-fg-secondary">Nothing to Display</span>
+        </div>
+      ) : (
+        <div className="flex flex-col">
+          {entries.map((entry, i) => {
+            const ChannelIcon = CONTACT_HISTORY_CHANNEL_ICON[entry.channelType];
+            return (
+              <div
+                key={entry.id}
+                className={cn(
+                  "flex items-start justify-between gap-4 px-4 py-4",
+                  i > 0 && "border-t border-lyra-border-subtle"
+                )}
+              >
+                <div className="flex flex-col gap-1.5 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="lyra-body-md-emphasis text-lyra-fg-default">{entry.name}</span>
+                    <Tag label={entry.statusLabel} variant={entry.statusVariant} />
+                    {entry.redial && (
+                      <Button variant="outline" size="sm" onClick={() => onRedial?.(entry)}>
+                        <PhoneOutgoing className="h-3.5 w-3.5" strokeWidth={1.5} />
+                        Redial
+                      </Button>
+                    )}
+                  </div>
+                  <span className="lyra-body-md text-lyra-fg-secondary">{entry.description}</span>
+                  <span className="lyra-body-sm text-lyra-fg-secondary">{entry.caseId}</span>
+                </div>
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  <span className="inline-flex items-center gap-1.5 lyra-body-sm text-lyra-fg-secondary whitespace-nowrap">
+                    <ChannelIcon className="h-4 w-4" strokeWidth={1.5} />
+                    {entry.channelLabel} · {entry.timeAgo}
+                  </span>
+                  <span className="lyra-body-md-emphasis tabular-nums text-lyra-fg-default whitespace-nowrap">{entry.duration}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </DashboardCard>
   );
 }
 
@@ -739,6 +1217,20 @@ export function AgentNextGenPage({
   onNavigate?: (page: Page) => void;
 }) {
   const [navOpen, setNavOpen] = useState(false);
+  // No interactions exist until the agent launches one from the CreateNew
+  // menu (Start Interaction / quick dial) — see handleStartCall/handleQuick
+  // Dial below. Click any resulting InteractionNavItem card to make it the
+  // active one.
+  const [interactions, setInteractions] = useState<ActiveInteraction[]>([]);
+  const [activeInteractionId, setActiveInteractionId] = useState<string | null>(null);
+  // Shared clock powering every open channel's live "MM:SS since it
+  // started" elapsed display — independent of `elapsedSeconds` below, which
+  // is the agent's own status timer and resets on status change.
+  const [clockTick, setClockTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setClockTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
   const [activeDeskTab, setActiveDeskTab] = useState<"home" | "customers" | "accounts" | "tickets" | "tasks">("home");
   const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
   const [notifications, setNotifications] = useState(INITIAL_NOTIFICATIONS);
@@ -796,6 +1288,10 @@ export function AgentNextGenPage({
 
   /* Interior panel (right) */
   const [interiorPanelOpen, setInteriorPanelOpen] = useState(false);
+  /* Which home-tab queue widget (if any) is selected — reuses the same
+     interior panel slot as Case Details, swapping its content instead of
+     stacking a second right-docked panel. */
+  const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null);
 
   /* Side panel */
   const [sidePanelOpen,      setSidePanelOpen]      = useState(false);
@@ -883,6 +1379,105 @@ export function AgentNextGenPage({
   const handleStatusChange = (status: AgentStatus) => {
     setAgentStatus(status);
     setElapsedSeconds(0);
+  };
+
+  /* ── Launching interactions from CreateNew ──
+     Overrides OUTBOUND_CONFIG's default onStartCall/onQuickDial (which just
+     console.log) so this page actually surfaces what gets launched as
+     InteractionNavItem cards in the left nav. Each handler below also
+     expands the nav (`setNavOpen(true)`) — a collapsed rail would otherwise
+     hide the card it just launched/updated from view entirely, so starting
+     a call always surfaces it regardless of whether the nav happened to be
+     collapsed at the time. */
+  const handleStartCall = (selection: {
+    contact: CreateNewOutboundContact;
+    channel: ChannelType;
+    phone: string;
+    skillId: string;
+  }) => {
+    const skillLabel = OUTBOUND_CONFIG.skillOptions.find((o) => o.value === selection.skillId)?.label;
+    const newChannel: TrackedChannel = { type: selection.channel, startTick: clockTick, preview: skillLabel };
+
+    setInteractions((prev) => {
+      const idx = prev.findIndex((i) => i.id === selection.contact.id);
+      // No existing interaction with this contact — start a new card.
+      if (idx === -1) {
+        return [...prev, { id: selection.contact.id, customerName: selection.contact.name, channels: [newChannel] }];
+      }
+      // Same contact already has an interaction open — fold this channel
+      // into it (restarting the channel's timer if it was already open)
+      // instead of creating a second card for the same person.
+      return prev.map((interaction, i) => {
+        if (i !== idx) return interaction;
+        const chIdx = interaction.channels.findIndex((c) => c.type === selection.channel);
+        const channels = chIdx === -1
+          ? [...interaction.channels, newChannel]
+          : interaction.channels.map((c, j) => (j === chIdx ? newChannel : c));
+        return { ...interaction, channels };
+      });
+    });
+    setActiveInteractionId(selection.contact.id);
+    setNavOpen(true);
+  };
+
+  const handleQuickDial = (phoneNumber: string) => {
+    // No contact record for a quick-dialed number — key the card off the
+    // number itself so redialing the same number restarts its card rather
+    // than stacking up duplicates.
+    const id = `quickdial:${phoneNumber}`;
+    const newChannel: TrackedChannel = { type: "voice", startTick: clockTick };
+    setInteractions((prev) => {
+      const idx = prev.findIndex((i) => i.id === id);
+      if (idx === -1) return [...prev, { id, channels: [newChannel] }];
+      return prev.map((interaction, i) => (i === idx ? { ...interaction, channels: [newChannel] } : interaction));
+    });
+    setActiveInteractionId(id);
+    setNavOpen(true);
+  };
+
+  /* "Redial" from the home tab's Contact History card — same merge-by-id
+     pattern as `handleQuickDial` (a fresh "voice" channel, keyed so redialing
+     the same past contact again restarts their existing card instead of
+     stacking a duplicate), but keyed off that contact-history entry's own id
+     (namespaced "redial:" to stay distinct from quick-dial/outbound ids) and
+     carrying the customer's real name, since — unlike a quick-dialed number —
+     Contact History always has one on hand. Also expands the nav, same
+     reasoning as handleStartCall/handleQuickDial above. */
+  const handleRedial = (entry: ContactHistoryEntry) => {
+    const id = `redial:${entry.id}`;
+    const newChannel: TrackedChannel = { type: "voice", startTick: clockTick };
+    setInteractions((prev) => {
+      const idx = prev.findIndex((i) => i.id === id);
+      if (idx === -1) return [...prev, { id, customerName: entry.name, channels: [newChannel] }];
+      return prev.map((interaction, i) => (i === idx ? { ...interaction, channels: [newChannel] } : interaction));
+    });
+    setActiveInteractionId(id);
+    setNavOpen(true);
+  };
+
+  /* "Unassign & Dismiss" — `InteractionNavItem` itself decides which of
+     these two applies (based on how many channels the card has open when
+     it's clicked), so these just need to implement each half:
+     `onDismiss` (whole card, only called when just one channel was open —
+     nothing would be left of the card otherwise) removes the interaction
+     entirely, clearing `activeInteractionId` too if it was the active one so
+     the side panel/content area doesn't keep pointing at a card that no
+     longer exists. `onDismissChannel` (only called when more than one
+     channel was open) drops just that one channel, leaving the rest of the
+     card and its other channels open. */
+  const handleDismissInteraction = (id: string) => {
+    setInteractions((prev) => prev.filter((interaction) => interaction.id !== id));
+    setActiveInteractionId((current) => (current === id ? null : current));
+  };
+
+  const handleDismissChannel = (id: string, channelType: ChannelType) => {
+    setInteractions((prev) =>
+      prev.map((interaction) =>
+        interaction.id === id
+          ? { ...interaction, channels: interaction.channels.filter((c) => c.type !== channelType) }
+          : interaction
+      )
+    );
   };
 
   /* Welcome modal — shown once on page load; "Go Available" flips the agent
@@ -1143,7 +1738,44 @@ export function AgentNextGenPage({
           open={navOpen}
           onToggle={() => setNavOpen((v) => !v)}
           overlay={isNavNarrow}
-          header={<CreateNew title="New Outbound" outbound={OUTBOUND_CONFIG} expanded={navOpen} />}
+          header={
+            <>
+              <CreateNew
+                title="New Outbound"
+                outbound={{ ...OUTBOUND_CONFIG, onStartCall: handleStartCall, onQuickDial: handleQuickDial }}
+                expanded={navOpen}
+              />
+              {/* No cards until the agent actually starts one above — each
+                  card is one contact (or quick-dialed number), with every
+                  channel they're being reached on folded into that same
+                  card (see handleStartCall's merge-by-contact-id logic). */}
+              {interactions.map((interaction) => {
+                const mostRecentType = interaction.channels[interaction.channels.length - 1]?.type;
+                const channels: InteractionChannel[] = interaction.channels.map((c) => ({
+                  type: c.type,
+                  elapsed: formatElapsedTime(clockTick - c.startTick),
+                  preview: c.preview,
+                  current: c.type === mostRecentType,
+                  awaitingResponse: c.type !== "voice",
+                }));
+                const earliestStart = Math.min(...interaction.channels.map((c) => c.startTick));
+                return (
+                  <InteractionNavItem
+                    key={interaction.id}
+                    customerName={interaction.customerName}
+                    active={activeInteractionId === interaction.id}
+                    onClick={() => setActiveInteractionId(interaction.id)}
+                    awaitingResponse={channels.some((c) => c.awaitingResponse)}
+                    elapsed={formatElapsedTime(clockTick - earliestStart)}
+                    expanded={navOpen}
+                    channels={channels}
+                    onDismiss={() => handleDismissInteraction(interaction.id)}
+                    onDismissChannel={(channelType: ChannelType) => handleDismissChannel(interaction.id, channelType)}
+                  />
+                );
+              })}
+            </>
+          }
         />
 
         {/* Content area — flex-1 shrinks to give space to docked panels.
@@ -1171,43 +1803,21 @@ export function AgentNextGenPage({
             {/* Content column: PageHeader + page body */}
             <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
               {showPageHeader && (
-                <PageHeader
-                  title="Desk"
-                  panelToggle={
-                    showPanelToggle && showInteriorPanel ? "both"
-                    : showPanelToggle ? "left"
-                    : showInteriorPanel ? "right"
-                    : undefined
-                  }
-                  panelPinned={effectivePinned}
-                  onPanelToggle={effectivePinned ? () => setSidePanelOpen((v) => !v) : undefined}
-                  onPanelHoverStart={!effectivePinned ? onSidePanelHoverStart : undefined}
-                  onPanelHoverEnd={!effectivePinned ? onSidePanelHoverEnd : undefined}
-                  onInnerPanelToggle={showInteriorPanel ? () => setInteriorPanelOpen((v) => !v) : undefined}
-                  actions={
-                    <>
-                      <Button variant="outline">Export</Button>
-                      <Button>
-                        <Plus className="h-4 w-4" strokeWidth={1.5} />
-                        New Case
-                      </Button>
-                    </>
-                  }
-                />
+                <PageHeader title="Desk" />
               )}
               {showPageHeader && (
                 <TabList className="px-6 bg-lyra-bg-surface-base shrink-0">
                   <Tab active={activeDeskTab === "home"} onClick={() => setActiveDeskTab("home")}>
-                    Home
+                    Dashboard
                   </Tab>
                   <Tab active={activeDeskTab === "customers"} onClick={() => setActiveDeskTab("customers")}>
-                    Customers List
+                    Customers
                   </Tab>
                   <Tab active={activeDeskTab === "accounts"} onClick={() => setActiveDeskTab("accounts")}>
-                    Accounts List
+                    Accounts
                   </Tab>
                   <Tab active={activeDeskTab === "tickets"} onClick={() => setActiveDeskTab("tickets")}>
-                    Tickets List
+                    Tickets
                   </Tab>
                   <Tab active={activeDeskTab === "tasks"} onClick={() => setActiveDeskTab("tasks")}>
                     Tasks
@@ -1219,102 +1829,138 @@ export function AgentNextGenPage({
                 <div className="flex flex-1 flex-col min-w-0 overflow-y-auto px-6 py-6">
                   <div className="w-full max-w-[1200px] mx-auto lyra-container-grid-wrap">
                     {/* ── Greeting ── */}
-                    <h1 className="lyra-heading-xl text-lyra-fg-default">Good morning, John</h1>
-                    <p className="lyra-body-sm text-lyra-fg-secondary mt-1">Last login: Today at 8:42 AM</p>
-                    <p className="lyra-body-md text-lyra-fg-default mt-4">
-                      You have 4 open cases that need attention, and you've already resolved 12 today.
-                      Your availability is down a bit compared to your team, but your working time is up.
-                      Keep an eye on handle time and aim to wrap responses within SLA windows.
-                    </p>
+                    <h1 className="lyra-heading-2xl text-lyra-fg-default">
+                      Good {getGreetingPeriod()}, {CURRENT_AGENT_FIRST_NAME}
+                    </h1>
+                    <p className="mt-1 lyra-body-md text-lyra-fg-secondary">Below is your team's queue for the day:</p>
 
-                    {/* ── Summary cards ── */}
+                    {/* ── Queue widgets ──
+                        `DashboardQueue` ("cards" variant, its default) —
+                        the numbers come straight from `LATEST_CONTACTS`, so
+                        they'd stay in sync with the accordion presentation
+                        of the same data if that's ever turned back on (see
+                        the note below). Clicking a widget opens the
+                        interior panel with that queue's sub-queue
+                        breakdown; the selected widget gets the "info-strong"
+                        (blue) treatment `DashboardQueue` applies on
+                        selection, driven by the controlled `selectedId`/
+                        `onSelect` pair kept in sync with the panel state. */}
+                    <DashboardQueue
+                      className="mt-6"
+                      items={LATEST_CONTACTS.map((contact) => ({
+                        id: contact.id,
+                        name: contact.name,
+                        icon: contact.icon,
+                        wait: contact.wait,
+                        skillsCount: contact.skillsCount,
+                        contactsCount: contact.contactsCount,
+                      }))}
+                      selectedId={selectedQueueId}
+                      onSelect={setSelectedQueueId}
+                    />
+
+                    {/* ── Latest Cases ──
+                        Removed for now (was `DashboardQueue`'s "accordion"
+                        variant, showing the same data as expandable rows
+                        with each queue's `InteractionsTable` as content) —
+                        may come back later, so `LATEST_CONTACTS`,
+                        `InteractionsTable`, and the rest of the data/markup
+                        it depended on are left in place rather than deleted. */}
+
+                    <div className="mt-6">
+                      <ContactHistoryCard onRedial={handleRedial} />
+                    </div>
+
+                    {/* ── Summary cards ──
+                        Was three cards (Activity/Performance/Productivity);
+                        Activity's ring chart moved into the bottom of
+                        PerformanceBreakdownCard (Productivity) and the
+                        standalone Activity card was removed, since the ring
+                        visualized the exact same Available/Working/
+                        Unavailable data Productivity's own rows already
+                        list — one card showing it twice added nothing a
+                        single card + ring didn't already cover. */}
                     <div className="mt-6 lyra-container-grid">
-                      {SUMMARY_CARDS.map((card) => (
-                        <Container
-                          key={card.id}
-                          variant="neutral-subtle"
-                          headerTitle={card.title}
-                          headerIcon={
-                            <Icon icon={card.icon} size="md" background={card.iconBackground} shape="rounded" decorative />
-                          }
-                          headerActions={card.headerAction}
-                        >
-                          <div className="flex flex-col gap-3 px-4 pb-4">
-                            {card.rows.map((row) => (
-                              <div key={row.label} className="flex items-center justify-between">
-                                <span className="lyra-body-md text-lyra-fg-secondary">{row.label}</span>
-                                <span className={cn("lyra-heading-sm text-lyra-fg-default", row.valueClassName)}>{row.value}</span>
-                              </div>
-                            ))}
-                            <Divider />
-                            <div className="flex flex-col gap-0.5">
-                              <span className="lyra-body-sm text-lyra-fg-secondary">{card.footerLabel}</span>
-                              <span className="lyra-body-md-emphasis text-lyra-fg-default">{card.footerPrimary}</span>
-                              {card.footerSecondary && (
-                                <span className={cn("lyra-body-sm text-lyra-fg-disabled truncate", card.footerSecondaryClassName)}>
-                                  {card.footerSecondary}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </Container>
-                      ))}
                       <PerformanceSummaryCard />
                       <PerformanceBreakdownCard />
                     </div>
-
-                    {/* ── Latest Cases ── */}
-                    <div className="mt-8 flex items-center gap-2">
-                      <h2 className="lyra-heading-md text-lyra-fg-default">Latest Cases</h2>
-                    </div>
-
-                    <Accordion
-                      type="multiple"
-                      className="mt-3 rounded-lyra-lg border border-lyra-border-subtle bg-lyra-bg-surface-base overflow-hidden"
-                      items={LATEST_CONTACTS.map((contact) => ({
-                        id: contact.id,
-                        title: (
-                          <span className="inline-flex items-center gap-2">
-                            {contact.name}
-                            <Tag
-                              label={contact.status === "open" ? "open" : "closed"}
-                              variant={contact.status === "open" ? "success" : "critical"}
-                              shape="pill"
-                            />
-                          </span>
-                        ),
-                        subhead: (
-                          <span className="flex flex-col gap-0.5">
-                            <span className="lyra-body-md text-lyra-fg-default">{contact.description}</span>
-                            <span className="inline-flex items-center gap-1">
-                              {contact.channel}
-                              <span aria-hidden="true">•</span>
-                              <Clock className="h-3 w-3" strokeWidth={1.5} />
-                              Wait: {contact.wait}
-                              <span aria-hidden="true">•</span>
-                              {contact.caseId}
-                            </span>
-                          </span>
-                        ),
-                        content: <InteractionsTable interactions={contact.interactions} />,
-                      }))}
-                    />
                   </div>
                 </div>
                 {showInteriorPanel && (
                   <Panel
                     variant="interior"
                     side="right"
-                    open={interiorPanelOpen}
-                    headerTitle="Case Details"
-                    onClose={() => setInteriorPanelOpen(false)}
+                    // Reuses this one docked slot for two different jobs —
+                    // the pre-existing "Case Details" form and the new
+                    // queue drill-down — rather than stacking a second
+                    // right-side panel, since only one detail view is ever
+                    // relevant at a time. `selectedQueueId` set takes
+                    // priority in both the open condition and the content
+                    // switch below.
+                    open={interiorPanelOpen || Boolean(selectedQueueId)}
+                    headerTitle={
+                      selectedQueueId
+                        ? LATEST_CONTACTS.find((c) => c.id === selectedQueueId)?.name ?? "Queue"
+                        : "Case Details"
+                    }
+                    onClose={() => {
+                      setInteriorPanelOpen(false);
+                      setSelectedQueueId(null);
+                    }}
                   >
-                    <div className="flex flex-col gap-4 px-4 py-4">
-                      <Input label="Subject" placeholder="Enter subject" />
-                      <Input label="Priority" placeholder="Select priority" />
-                      <Input label="Assignee" placeholder="Search agents" />
-                      <Input label="Tags" placeholder="Add tags" />
-                    </div>
+                    {selectedQueueId ? (
+                      <div className="flex flex-col">
+                        {(QUEUE_SUB_ITEMS[selectedQueueId] ?? []).map((item, i) => (
+                          <div
+                            key={item.id}
+                            className={cn(
+                              "flex flex-col gap-2 px-4 py-4",
+                              i > 0 && "border-t border-lyra-border-subtle"
+                            )}
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="inline-flex items-center gap-2 lyra-body-md-emphasis text-lyra-fg-default">
+                                <item.icon className="h-4 w-4 text-lyra-fg-secondary" strokeWidth={1.5} />
+                                {item.label}
+                              </span>
+                              <span className="lyra-body-sm text-lyra-fg-secondary whitespace-nowrap">
+                                {item.inQueueCount} In Queue
+                              </span>
+                            </div>
+                            <span className="inline-flex items-center gap-1 lyra-body-sm text-lyra-fg-secondary">
+                              <Clock className="h-3 w-3" strokeWidth={1.5} />
+                              Wait: {item.wait}
+                            </span>
+                            {/* Available / Working / Unavailable agent counts for
+                                this sub-queue — same icons, colors, and order as
+                                PRODUCTIVITY_STATUS_META (Activity/Productivity
+                                cards), just rendered as compact circular Icon
+                                badges instead of a donut/bar. */}
+                            <div className="flex items-center gap-3">
+                              <span className="inline-flex items-center gap-1.5">
+                                <Icon icon={CheckCircle2} size="sm" background="success" shape="circle" decorative />
+                                <span className="lyra-body-sm-emphasis text-lyra-fg-default">{item.available}</span>
+                              </span>
+                              <span className="inline-flex items-center gap-1.5">
+                                <Icon icon={CircleDot} size="sm" background="warning" shape="circle" decorative />
+                                <span className="lyra-body-sm-emphasis text-lyra-fg-default">{item.working}</span>
+                              </span>
+                              <span className="inline-flex items-center gap-1.5">
+                                <Icon icon={MinusCircle} size="sm" background="critical" shape="circle" decorative />
+                                <span className="lyra-body-sm-emphasis text-lyra-fg-default">{item.unavailable}</span>
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-4 px-4 py-4">
+                        <Input label="Subject" placeholder="Enter subject" />
+                        <Input label="Priority" placeholder="Select priority" />
+                        <Input label="Assignee" placeholder="Search agents" />
+                        <Input label="Tags" placeholder="Add tags" />
+                      </div>
+                    )}
                   </Panel>
                 )}
               </div>
@@ -1439,14 +2085,11 @@ export function AgentNextGenPage({
           utilities for our `var(--lyra-color-*)` tokens (same root cause as
           the Tag border-color bug — see lyra-ui's PROJECT_SUMMARY.md).
 
-          The card itself renders via `Container variant="modal"` (same as
-          `LoginCard`) rather than a hand-rolled div with its own background
-          class — it originally used `bg-lyra-bg-surface-base`, which in dark
-          mode (`#1f1f1e`) is noticeably darker than the `bg-lyra-bg-surface-
-          overlay` (`#2e2e2e`) every other modal in the app uses, making this
-          modal look like a different, mismatched shade of dark next to
-          LoginCard's. Always use `Container variant="modal"` for a modal's
-          outer card so every modal in the app shares one background. ── */}
+          The card itself is the shared `AgentWelcomeMessage` lyra-ui
+          component (icon/title/lastLogin block + info-box slot + Divider +
+          two-button footer, all via `Container variant="modal"` — same
+          shell `LoginCard` uses, so every modal in the app shares one
+          background) rather than hand-rolled markup local to this app. ── */}
       <Overlay
         variant="light"
         className="bg-[color-mix(in_srgb,var(--lyra-color-bg-surface-shell)_75%,transparent)]"
@@ -1454,30 +2097,18 @@ export function AgentNextGenPage({
         onClose={() => setShowWelcomeModal(false)}
         closeOnBackdropClick={false}
       >
-        <Container variant="modal" className="w-[420px] p-6">
-          <div className="flex items-start gap-3">
-            <img src={appIcon} alt="" className="h-8 w-8 shrink-0" />
-            <div className="flex flex-col gap-1">
-              <h2 className="lyra-heading-lg text-lyra-fg-default">Good morning, John</h2>
-              <p className="lyra-body-md text-lyra-fg-secondary">Here's what's waiting for you today</p>
-            </div>
-          </div>
-
-          <div className="mt-5 rounded-lyra-md bg-lyra-bg-surface-container-subtle p-4">
-            <p className="lyra-body-md text-lyra-fg-default">
-              You have 4 open cases that need attention, and you've already resolved 12 today.
-              Your availability is down a bit compared to your team, but your working time is up.
-              Keep an eye on handle time and aim to wrap responses within SLA windows.
-            </p>
-          </div>
-
-          <Divider className="my-5" />
-
-          <div className="flex gap-3">
-            <Button className="flex-1" onClick={handleGoAvailable}>Go Available</Button>
-            <Button variant="outline" className="flex-1" onClick={handleStartOffline}>Start Offline</Button>
-          </div>
-        </Container>
+        <AgentWelcomeMessage
+          icon={<img src={appIcon} alt="" className="h-8 w-8 shrink-0" />}
+          title={`Good morning, ${CURRENT_AGENT_FIRST_NAME} ${CURRENT_AGENT_LAST_NAME}`}
+          lastLogin={WELCOME_MODAL_LAST_LOGIN}
+          onPrimaryClick={handleGoAvailable}
+          onSecondaryClick={handleStartOffline}
+        >
+          <p className="lyra-body-md text-lyra-fg-default">
+            You are currently assigned to {AGENT_SKILLS_COUNT} skills. {TEAMMATES_ONLINE_COUNT} teammates are
+            online, {TEAMMATES_AVAILABLE_COUNT} are available. Select an option below to begin.
+          </p>
+        </AgentWelcomeMessage>
       </Overlay>
     </div>
   );
