@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import * as PopoverPrimitive from "@radix-ui/react-popover";
 import { cn } from "@/lib/utils";
 import {
@@ -19,6 +19,7 @@ import {
   Input,
   LeftNav,
   CreateNew,
+  OutboundAddButton,
   InteractionNavItem,
   Table,
   TableHeader,
@@ -132,6 +133,7 @@ const OUTBOUND_AGENTS: NonNullable<CreateNewOutboundConfig["groups"][number]["co
   subtitle: a.agentId,
   avatarClassName: a.avatarClassName,
   channels: a.channels,
+  status: a.status,
 }));
 
 const OUTBOUND_CUSTOMERS: NonNullable<CreateNewOutboundConfig["groups"][number]["contacts"]> = CREATE_NEW_CUSTOMERS.map((c) => ({
@@ -149,8 +151,8 @@ const OUTBOUND_TEAMS: NonNullable<CreateNewOutboundConfig["groups"][number]["con
 ];
 
 const OUTBOUND_SKILLS: NonNullable<CreateNewOutboundConfig["groups"][number]["contacts"]> = [
-  { id: "s1", name: "Spanish Language",  initials: "ES", subtitle: "SKL-12", avatarClassName: "bg-lyra-accent-green-soft text-lyra-accent-green-strong", channels: ["voice", "email"] },
-  { id: "s2", name: "Technical Support", initials: "TS", subtitle: "SKL-03", avatarClassName: "bg-lyra-accent-blue-soft text-lyra-accent-blue-strong",   channels: ["voice", "email"] },
+  { id: "s1", name: "Spanish Language",  initials: "ES", subtitle: "SKL-12", avatarClassName: "bg-lyra-accent-green-soft text-lyra-accent-green-strong", channels: ["voice", "email"], status: "available", queueCount: 4, waitTimeSeconds: 200 },
+  { id: "s2", name: "Technical Support", initials: "TS", subtitle: "SKL-03", avatarClassName: "bg-lyra-accent-blue-soft text-lyra-accent-blue-strong",   channels: ["voice", "email"], status: "busy",      queueCount: 7, waitTimeSeconds: 95 },
 ];
 
 const OUTBOUND_CONFIG: CreateNewOutboundConfig = {
@@ -205,21 +207,54 @@ const OUTBOUND_CONFIG: CreateNewOutboundConfig = {
    lyra-ui's AgentNextGenTemplate.stories.tsx for the reference
    implementation this mirrors. No cards exist until the agent actually
    starts one; starting a second channel with a contact who already has a
-   card folds it into that same card instead of creating a second one.
-   "Unassign & Dismiss" (any channel's kebab menu) removes just that channel
-   via InteractionNavItem's `onDismissChannel` when others are still open, or
-   the whole card via `onDismiss` when it was the last one — see
-   `handleDismissChannel`/`handleDismissInteraction`. */
+   card folds it into that same card *only* when it's the same channel type
+   on the same address (restarting its timer) — a different address on the
+   same type (e.g. a second SMS thread on a different number) opens as its
+   own additional row instead of replacing the first, since it's a genuinely
+   separate conversation. "Unassign & Dismiss" (any channel's kebab menu)
+   removes just that channel via InteractionNavItem's `onDismissChannel`
+   when others are still open, or the whole card via `onDismiss` when it was
+   the last one — see `handleDismissChannel`/`handleDismissInteraction`. */
 
 /** A channel open within one live interaction — tracks when it started
  *  (in ticks of the shared clock below) rather than a fixed elapsed string,
  *  so the rendered `InteractionChannel.elapsed` keeps counting up live. */
 interface TrackedChannel {
+  /** Unique identity for this specific channel, so two channels of the same
+   *  `type` (e.g. two SMS threads on different numbers) are tracked as
+   *  separate rows instead of one overwriting the other — see
+   *  `InteractionChannel.id`'s own doc comment in lyra-ui. Built from
+   *  `type` + `value` (`"sms:+14565559981"`) so restarting the *same*
+   *  address correctly reuses/refreshes the existing row (see
+   *  `handleStartCall`) while a different address never collides with it.
+   *  Quick-dialed/redialed channels (no CreateNew contact/address) just use
+   *  their `type`, since those flows already fully replace `channels`
+   *  rather than merging into it. */
+  id: string;
   type: ChannelType;
   startTick: number;
   /** Routing skill label for this channel, shown as its body copy — looked
    *  up from OUTBOUND_CONFIG.skillOptions at start-call time. */
   preview?: string;
+  /** The phone number/email address/WhatsApp handle this channel was
+   *  started on (from `handleStartCall`'s `selection.phone`) — surfaced
+   *  back into CreateNew's `openChannelAddresses` so reopening the outbound
+   *  picker for this contact disables only that exact address in "Select
+   *  Phone"/"Select Email Address"/"Select WhatsApp Handle", not the whole
+   *  field. Undefined for quick-dialed/redialed channels, which don't go
+   *  through CreateNew's contact flow. */
+  value?: string;
+  /** Whether the customer has sent a message on this channel that the agent
+   *  hasn't replied to yet — drives the row's red/critical chip+clock
+   *  styling (green/success otherwise). Always omitted (falsy) at
+   *  start-call/quick-dial/redial time: an agent-initiated outbound channel
+   *  has nothing pending from the customer the moment it opens, so it
+   *  should never render red immediately just because its `type` isn't
+   *  voice. There's no live customer-reply event in this demo to flip it
+   *  true later — this field exists so that mechanism has somewhere to
+   *  plug in without re-introducing the "every non-voice channel is
+   *  permanently red" bug this replaced. */
+  awaitingResponse?: boolean;
 }
 
 /** One live interaction in the left nav — an agent/customer/team/skill
@@ -454,24 +489,23 @@ const QUEUE_SUB_ITEMS: Record<string, QueueSubItem[]> = {
   ],
 };
 
-/* Random contact-in-queue counts for each queue widget — regenerated on
-   every page load/module evaluation (not on every re-render, since this
-   only runs once here rather than inside a component). Range is just a
-   plausible depth, not tied to any real data. Skills counts, by contrast,
-   are NOT randomized — a queue's skill count is a real, fixed quantity (how
-   many skills are actually assigned to it), so each one is instead derived
-   directly from `QUEUE_SUB_ITEMS[id].length`, the same list the side panel
-   renders — the two numbers can never drift apart since they're the same
-   underlying list. */
-function randomContactsCount(): number {
-  return Math.floor(Math.random() * 40) + 1;
+/* Contact-in-queue counts for each queue widget — NOT randomized (that was
+   the bug: an earlier version generated these with `randomContactsCount()`,
+   a plausible-looking number with no connection to the actual queue data,
+   so the metric card's "Contacts" count and the side panel's own "In Queue"
+   figures for the same queue could — and did — disagree, e.g. "2 Contacts"
+   on a queue whose sub-items summed to 5). Fixed the same way `skillsCount`
+   already worked: derived directly from `QUEUE_SUB_ITEMS[id]`, the same
+   list the side panel renders, so the two can never drift apart. */
+function sumInQueue(id: string): number {
+  return QUEUE_SUB_ITEMS[id].reduce((total, item) => total + item.inQueueCount, 0);
 }
 
 const LATEST_CONTACTS: LatestContact[] = [
-  { id: "1", name: "Digital",       icon: MessageSquare, status: "open",   contactsCount: randomContactsCount(), skillsCount: QUEUE_SUB_ITEMS["1"].length, channel: "Atlas", wait: "1m",  caseId: "CST-21009", interactions: buildInteractions(1, "open", 3) },
-  { id: "2", name: "Inbound Voice", icon: PhoneIncoming, status: "open",   contactsCount: randomContactsCount(), skillsCount: QUEUE_SUB_ITEMS["2"].length, channel: "Atlas", wait: "3m",  caseId: "CST-21016", interactions: buildInteractions(2, "open", 5) },
-  { id: "3", name: "Voicemail",     icon: Voicemail,     status: "closed", contactsCount: randomContactsCount(), skillsCount: QUEUE_SUB_ITEMS["3"].length, channel: "Atlas", wait: "2m",  caseId: "CST-21028", interactions: buildInteractions(3, "closed", 1) },
-  { id: "4", name: "Work Item",     icon: ClipboardList, status: "open",   contactsCount: randomContactsCount(), skillsCount: QUEUE_SUB_ITEMS["4"].length, channel: "Emily", wait: "3m",  caseId: "CST-15001", interactions: buildInteractions(4, "open", 7) },
+  { id: "1", name: "Digital",       icon: MessageSquare, status: "open",   contactsCount: sumInQueue("1"), skillsCount: QUEUE_SUB_ITEMS["1"].length, channel: "Atlas", wait: "1m",  caseId: "CST-21009", interactions: buildInteractions(1, "open", 3) },
+  { id: "2", name: "Inbound Voice", icon: PhoneIncoming, status: "open",   contactsCount: sumInQueue("2"), skillsCount: QUEUE_SUB_ITEMS["2"].length, channel: "Atlas", wait: "3m",  caseId: "CST-21016", interactions: buildInteractions(2, "open", 5) },
+  { id: "3", name: "Voicemail",     icon: Voicemail,     status: "closed", contactsCount: sumInQueue("3"), skillsCount: QUEUE_SUB_ITEMS["3"].length, channel: "Atlas", wait: "2m",  caseId: "CST-21028", interactions: buildInteractions(3, "closed", 1) },
+  { id: "4", name: "Work Item",     icon: ClipboardList, status: "open",   contactsCount: sumInQueue("4"), skillsCount: QUEUE_SUB_ITEMS["4"].length, channel: "Emily", wait: "3m",  caseId: "CST-15001", interactions: buildInteractions(4, "open", 7) },
 ];
 
 /* ── Home screen summary cards ── */
@@ -1223,6 +1257,12 @@ export function AgentNextGenPage({
   // active one.
   const [interactions, setInteractions] = useState<ActiveInteraction[]>([]);
   const [activeInteractionId, setActiveInteractionId] = useState<string | null>(null);
+  // Set by an InteractionNavItem card's own "Add Outbound" button (see
+  // OutboundAddButton usage below) to deep-link CreateNew straight to the
+  // call-setup screen for that contact+channel — see
+  // CreateNewOutboundConfig.launchRequest's own doc comment in lyra-ui.
+  // Cleared back to null once CreateNew reports it's been handled.
+  const [outboundLaunchRequest, setOutboundLaunchRequest] = useState<{ contactId: string; channel: ChannelType } | null>(null);
   // Shared clock powering every open channel's live "MM:SS since it
   // started" elapsed display — independent of `elapsedSeconds` below, which
   // is the agent's own status timer and resets on status change.
@@ -1396,7 +1436,13 @@ export function AgentNextGenPage({
     skillId: string;
   }) => {
     const skillLabel = OUTBOUND_CONFIG.skillOptions.find((o) => o.value === selection.skillId)?.label;
-    const newChannel: TrackedChannel = { type: selection.channel, startTick: clockTick, preview: skillLabel };
+    const newChannel: TrackedChannel = {
+      id: `${selection.channel}:${selection.phone}`,
+      type: selection.channel,
+      startTick: clockTick,
+      preview: skillLabel,
+      value: selection.phone,
+    };
 
     setInteractions((prev) => {
       const idx = prev.findIndex((i) => i.id === selection.contact.id);
@@ -1404,12 +1450,16 @@ export function AgentNextGenPage({
       if (idx === -1) {
         return [...prev, { id: selection.contact.id, customerName: selection.contact.name, channels: [newChannel] }];
       }
-      // Same contact already has an interaction open — fold this channel
-      // into it (restarting the channel's timer if it was already open)
-      // instead of creating a second card for the same person.
+      // Same contact already has an interaction open — restart the matching
+      // channel's timer if this is the *same* type+address (e.g. redialing
+      // the same SMS number), or add a new row alongside the existing ones
+      // if it's a different address on the same type (e.g. a second SMS
+      // thread on a different number) — those are genuinely separate
+      // conversations, not a duplicate of the first, so they shouldn't
+      // overwrite it.
       return prev.map((interaction, i) => {
         if (i !== idx) return interaction;
-        const chIdx = interaction.channels.findIndex((c) => c.type === selection.channel);
+        const chIdx = interaction.channels.findIndex((c) => c.id === newChannel.id);
         const channels = chIdx === -1
           ? [...interaction.channels, newChannel]
           : interaction.channels.map((c, j) => (j === chIdx ? newChannel : c));
@@ -1425,7 +1475,7 @@ export function AgentNextGenPage({
     // number itself so redialing the same number restarts its card rather
     // than stacking up duplicates.
     const id = `quickdial:${phoneNumber}`;
-    const newChannel: TrackedChannel = { type: "voice", startTick: clockTick };
+    const newChannel: TrackedChannel = { id: "voice", type: "voice", startTick: clockTick };
     setInteractions((prev) => {
       const idx = prev.findIndex((i) => i.id === id);
       if (idx === -1) return [...prev, { id, channels: [newChannel] }];
@@ -1445,7 +1495,7 @@ export function AgentNextGenPage({
      reasoning as handleStartCall/handleQuickDial above. */
   const handleRedial = (entry: ContactHistoryEntry) => {
     const id = `redial:${entry.id}`;
-    const newChannel: TrackedChannel = { type: "voice", startTick: clockTick };
+    const newChannel: TrackedChannel = { id: "voice", type: "voice", startTick: clockTick };
     setInteractions((prev) => {
       const idx = prev.findIndex((i) => i.id === id);
       if (idx === -1) return [...prev, { id, customerName: entry.name, channels: [newChannel] }];
@@ -1470,15 +1520,84 @@ export function AgentNextGenPage({
     setActiveInteractionId((current) => (current === id ? null : current));
   };
 
-  const handleDismissChannel = (id: string, channelType: ChannelType) => {
+  const handleDismissChannel = (id: string, channel: InteractionChannel) => {
+    // Match on `id` (falling back to `type`, same as InteractionNavItem's
+    // own `channelKey` convention) rather than `type` alone — two open
+    // channels can share a `type` (e.g. two SMS threads on different
+    // numbers), and filtering by `type` would drop *both* instead of just
+    // the one the agent actually dismissed.
+    const dismissedKey = channel.id ?? channel.type;
     setInteractions((prev) =>
       prev.map((interaction) =>
         interaction.id === id
-          ? { ...interaction, channels: interaction.channels.filter((c) => c.type !== channelType) }
+          ? { ...interaction, channels: interaction.channels.filter((c) => (c.id ?? c.type) !== dismissedKey) }
           : interaction
       )
     );
   };
+
+  /* ── Preventing duplicate channels from the CreateNew picker ──
+     A contact already reachable via a currently-open channel (e.g. Jamie
+     Torres has an SMS interaction open on a specific number) still shows
+     that channel in "Select Channel" and every address in the detail
+     screen's second field ("Select Phone"/"Select Email Address"/"Select
+     WhatsApp Handle") — except whichever exact address(es) are already in
+     use, which are disabled so starting another interaction on one of them
+     wouldn't just duplicate the one already running (a different outbound
+     line for the same channel — or a second, still-unused one, even when
+     one SMS number is already open — stays selectable).
+     `CreateNewOutboundContact.openChannelAddresses` is exactly the
+     mechanism `CreateNew` exposes for this (see its own doc comment), so
+     rather than adding new disabling logic to that shared component, this
+     derives a per-render copy of OUTBOUND_CONFIG that tags each contact
+     with every address in use for whichever channels they already have
+     open in `interactions` (read off each `TrackedChannel.value`, set at
+     start-call time — a contact can have more than one channel of the same
+     type open at once, e.g. two SMS threads on different numbers, so this
+     is a list per channel type, not a single address), across every group
+     (Agents/Teams/Skills/Customers — Favorites is derived from these same
+     records, so it inherits the tagging automatically). Recomputed
+     whenever `interactions` changes so an address re-enables the moment its
+     interaction is dismissed. */
+  const outboundConfig = useMemo<CreateNewOutboundConfig>(() => {
+    const openAddressesByContactId = new Map<string, Partial<Record<ChannelType, string[]>>>(
+      interactions.map((interaction) => {
+        const byType: Partial<Record<ChannelType, string[]>> = {};
+        for (const c of interaction.channels) {
+          if (!c.value) continue;
+          (byType[c.type] ??= []).push(c.value);
+        }
+        return [interaction.id, byType];
+      })
+    );
+    return {
+      ...OUTBOUND_CONFIG,
+      groups: OUTBOUND_CONFIG.groups.map((group) => {
+        if (!group.contacts) return group;
+        return {
+          ...group,
+          contacts: group.contacts.map((contact) => {
+            const openChannelAddresses = openAddressesByContactId.get(contact.id);
+            if (!openChannelAddresses || Object.keys(openChannelAddresses).length === 0) return contact;
+            return { ...contact, openChannelAddresses };
+          }),
+        };
+      }),
+    };
+  }, [interactions]);
+
+  // Every outbound contact (agent/team/skill/customer), keyed by id — used
+  // to look up which channels a *live interaction*'s underlying contact
+  // actually supports, for that card's own "Add Outbound" button (see
+  // OutboundAddButton usage below). `ActiveInteraction.id` is always a
+  // contact's id for interactions started via CreateNew (see
+  // handleStartCall) — the `quickdial:`/`redial:` prefixed ids have no
+  // matching contact record, which the lookup's `undefined` return already
+  // handles (falls back to every channel type, see the render below).
+  const outboundContactsById = useMemo(
+    () => new Map(outboundConfig.groups.flatMap((g) => g.contacts ?? []).map((c) => [c.id, c])),
+    [outboundConfig]
+  );
 
   /* Welcome modal — shown once on page load; "Go Available" flips the agent
      to Available, "Start Offline" keeps them Offline (the default state). */
@@ -1742,23 +1861,47 @@ export function AgentNextGenPage({
             <>
               <CreateNew
                 title="New Outbound"
-                outbound={{ ...OUTBOUND_CONFIG, onStartCall: handleStartCall, onQuickDial: handleQuickDial }}
+                outbound={{
+                  ...outboundConfig,
+                  onStartCall: handleStartCall,
+                  onQuickDial: handleQuickDial,
+                  launchRequest: outboundLaunchRequest,
+                  onLaunchRequestHandled: () => setOutboundLaunchRequest(null),
+                }}
                 expanded={navOpen}
               />
               {/* No cards until the agent actually starts one above — each
                   card is one contact (or quick-dialed number), with every
                   channel they're being reached on folded into that same
-                  card (see handleStartCall's merge-by-contact-id logic). */}
+                  card unless it's a different address on an already-open
+                  type, which opens as its own row instead (see
+                  handleStartCall's merge-by-type+address logic). */}
               {interactions.map((interaction) => {
-                const mostRecentType = interaction.channels[interaction.channels.length - 1]?.type;
+                const mostRecentId = interaction.channels[interaction.channels.length - 1]?.id;
                 const channels: InteractionChannel[] = interaction.channels.map((c) => ({
+                  id: c.id,
                   type: c.type,
                   elapsed: formatElapsedTime(clockTick - c.startTick),
                   preview: c.preview,
-                  current: c.type === mostRecentType,
-                  awaitingResponse: c.type !== "voice",
+                  current: c.id === mostRecentId,
+                  // Read straight off the tracked channel (see
+                  // TrackedChannel.awaitingResponse's own doc comment) —
+                  // not derived from `type` — so a freshly-started outbound
+                  // channel never renders red just for being SMS/chat/
+                  // email/WhatsApp instead of voice.
+                  awaitingResponse: c.awaitingResponse ?? false,
                 }));
                 const earliestStart = Math.min(...interaction.channels.map((c) => c.startTick));
+                // Quick-dialed/redialed interactions (id prefixed
+                // "quickdial:"/"redial:") have no backing Agent/Customer/
+                // Team/Skill contact record to look up real per-contact
+                // channel support from — offer the full unfiltered channel
+                // list for those so the "+" still appears on every card's
+                // header (see `headerAction` below).
+                const contactRecord = outboundContactsById.get(interaction.id);
+                const addOutboundChannelOptions = contactRecord
+                  ? OUTBOUND_CONFIG.channelOptions.filter((c) => contactRecord.channels.includes(c.id))
+                  : OUTBOUND_CONFIG.channelOptions;
                 return (
                   <InteractionNavItem
                     key={interaction.id}
@@ -1770,7 +1913,13 @@ export function AgentNextGenPage({
                     expanded={navOpen}
                     channels={channels}
                     onDismiss={() => handleDismissInteraction(interaction.id)}
-                    onDismissChannel={(channelType: ChannelType) => handleDismissChannel(interaction.id, channelType)}
+                    onDismissChannel={(channel) => handleDismissChannel(interaction.id, channel)}
+                    headerAction={
+                      <OutboundAddButton
+                        channelOptions={addOutboundChannelOptions}
+                        onSelect={(channel) => setOutboundLaunchRequest({ contactId: interaction.id, channel })}
+                      />
+                    }
                   />
                 );
               })}
