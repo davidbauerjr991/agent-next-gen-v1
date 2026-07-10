@@ -13,6 +13,7 @@ import {
   AgentProfile,
   Container,
   Panel,
+  CustomerInformationPanel,
   PanelPinButton,
   PageHeader,
   Button,
@@ -2134,33 +2135,38 @@ export function AgentNextGenPage({
               relative so unpinned Panel can overlay the full surface. */}
           <Container className="flex flex-1 overflow-hidden relative">
 
-            {/* Designer Panel — one instance whose `pinned` prop just flips
-                Panel's own internal inline-vs-overlay branch, the same way
-                Panel.stories.tsx's "Side Panel" story toggles `pinned`/`open`
-                on a single element. This used to be two separately-gated
-                `<Panel>` elements (one per branch, below) — flipping
-                `effectivePinned` unmounted one and mounted the other, so the
-                very click meant to animate the panel open instead made it
-                jump straight to its resting width (a fresh mount has no
-                prior width to transition from). One element, prop-driven,
-                animates correctly either way — matching the story.
-                Gated on `activeInteraction`, not just `showPanelToggle` —
-                its only trigger is the record icon on the interaction
-                `PageHeader` below, which doesn't exist on the Desk
-                dashboard. Without this it stayed mounted (and, if pinned,
-                stayed open) after navigating away from the interaction that
-                opened it, since nothing else about `showPanelToggle` varies
-                by page. The `activeInteraction`-clearing effect above
-                already closes/unpins it going into that transition, so
-                unmounting here doesn't lose any pinned/open state that
-                needed to persist. */}
+            {/* Customer Information Panel — one instance whose `pinned` prop
+                just flips Panel's own internal inline-vs-overlay branch, the
+                same way Panel.stories.tsx's "Side Panel" story toggles
+                `pinned`/`open` on a single element. This used to be two
+                separately-gated `<Panel>` elements (one per branch, below) —
+                flipping `effectivePinned` unmounted one and mounted the
+                other, so the very click meant to animate the panel open
+                instead made it jump straight to its resting width (a fresh
+                mount has no prior width to transition from). One element,
+                prop-driven, animates correctly either way — matching the
+                story. Gated on `activeInteraction`, not just
+                `showPanelToggle` — its only trigger is the record icon on
+                the interaction `PageHeader` below, which doesn't exist on
+                the Desk dashboard. Without this it stayed mounted (and, if
+                pinned, stayed open) after navigating away from the
+                interaction that opened it, since nothing else about
+                `showPanelToggle` varies by page. The `activeInteraction`-
+                clearing effect above already closes/unpins it going into
+                that transition, so unmounting here doesn't lose any
+                pinned/open state that needed to persist.
+                Was a bare `<Panel headerTitle="Designer" .../>` with no
+                body content — swapped for `CustomerInformationPanel`
+                (lyra-ui) which fixes the header to "Customer Information"
+                and adds a "{name} · {id}" subhead for whoever this
+                interaction is with, composed on top of the same `Panel`
+                rather than reimplemented. */}
             {showPanelToggle && activeInteraction && (
-              <Panel
-                variant="side"
+              <CustomerInformationPanel
                 side="left"
                 open={sidePanelOpen}
                 pinned={effectivePinned}
-                headerTitle="Designer"
+                person={{ name: activeInteraction.customerName ?? "Customer", id: activeInteraction.recordId }}
                 onPinToggle={isNarrowContainer ? undefined : handleSidePanelPinToggle}
                 width={sidePanelWidth}
                 onWidthChange={setSidePanelWidth}
