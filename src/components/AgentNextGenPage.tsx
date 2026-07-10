@@ -1304,19 +1304,43 @@ export function AgentNextGenPage({
   showPanelToggle = false,
   showInteriorPanel = true,
   onNavigate,
+  initialInteraction,
+  sidePanelToggleLabel,
 }: {
   showPageHeader?: boolean;
   showPanelToggle?: boolean;
   showInteriorPanel?: boolean;
   onNavigate?: (page: Page) => void;
+  /**
+   * Seeds `interactions`/`activeInteractionId` with an already-active call
+   * instead of starting empty — mirrors lyra-ui's `AgentNextGenTemplate`
+   * "Active Interaction" story prop of the same name (see that story's own
+   * doc comment for the full rationale). Not passed anywhere in this app
+   * today — kept as an opt-in capability so this component stays in sync
+   * with the canonical template's shape, not to change default behavior.
+   */
+  initialInteraction?: ActiveInteraction;
+  /**
+   * Overrides the record-header `PanelPinButton`'s tooltip (both pinned and
+   * unpinned label, since "Toggle Overview" describes the action generically
+   * rather than a pin/unpin pair) — mirrors lyra-ui's `AgentNextGenTemplate`
+   * prop of the same name. Defaults to "Toggle Overview" here too, matching
+   * that template's current copy; pass a different string to override it.
+   */
+  sidePanelToggleLabel?: string;
 }) {
-  const [navOpen, setNavOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(!!initialInteraction);
   // No interactions exist until the agent launches one from the CreateNew
   // menu (Start Interaction / quick dial) — see handleStartCall/handleQuick
   // Dial below. Click any resulting InteractionNavItem card to make it the
-  // active one.
-  const [interactions, setInteractions] = useState<ActiveInteraction[]>([]);
-  const [activeInteractionId, setActiveInteractionId] = useState<string | null>(null);
+  // active one. `initialInteraction` (see above) seeds this instead, for
+  // callers that want to start already mid-call.
+  const [interactions, setInteractions] = useState<ActiveInteraction[]>(
+    () => (initialInteraction ? [initialInteraction] : [])
+  );
+  const [activeInteractionId, setActiveInteractionId] = useState<string | null>(
+    () => initialInteraction?.id ?? null
+  );
   // Drives the main content area: whenever an interaction is active, the
   // Desk dashboard is replaced by that interaction's blank detail page (see
   // the PageHeader "record header" mode below) — starting/quick-dialing/
@@ -1399,13 +1423,6 @@ export function AgentNextGenPage({
   const [sidePanelResizing,  setSidePanelResizing]  = useState(false);
   const [sidePanelWidth,     setSidePanelWidth]     = useState(256);
   const [containerWidth,     setContainerWidth]     = useState(9999);
-  // Once the icon has explicitly pinned-then-closed the panel (see
-  // `handleSidePanelIconToggle`), hovering the icon again must NOT
-  // auto-reopen it — that would override a deliberate "close" decision.
-  // From that point on, only another click reopens it. Starts `true` so
-  // the very first hover (before anything has ever been pinned) still
-  // works as a preview, per the earlier "display on hover" request.
-  const [sidePanelHoverEnabled, setSidePanelHoverEnabled] = useState(true);
   const sidePanelTimer = useRef<ReturnType<typeof setTimeout>>();
 
   // Track container width to force unpinned below 768px
@@ -1423,20 +1440,15 @@ export function AgentNextGenPage({
   const effectivePinned = isNarrowContainer ? false : sidePanelPinned;
 
   // Close (and fully unpin) the Designer panel the moment the container
-  // drops below 768px, and make sure hover-preview is re-armed — same
-  // "reset state on narrow, don't just hide it visually" pattern as the
-  // nav/docked-panel effects below. Without this, a panel left open+pinned
-  // at a wide width stayed open (just re-skinned as an overlay by
-  // `effectivePinned` above) the instant the container narrowed, instead
-  // of actually closing — and if a prior wide-mode pin-then-close had
-  // already disabled hover (see `sidePanelHoverEnabled`), narrow mode
-  // would be left with no way to reopen it at all. Narrow mode's only
-  // opening mechanism is hover, so both must be reset together.
+  // drops below 768px — same "reset state on narrow, don't just hide it
+  // visually" pattern as the nav/docked-panel effects below. Without this,
+  // a panel left open+pinned at a wide width stayed open (just re-skinned
+  // as an overlay by `effectivePinned` above) the instant the container
+  // narrowed, instead of actually closing.
   useEffect(() => {
     if (isNarrowContainer) {
       setSidePanelOpen(false);
       setSidePanelPinned(false);
-      setSidePanelHoverEnabled(true);
     }
   }, [isNarrowContainer]);
 
@@ -1452,7 +1464,6 @@ export function AgentNextGenPage({
     if (!activeInteractionId) {
       setSidePanelOpen(false);
       setSidePanelPinned(false);
-      setSidePanelHoverEnabled(true);
     }
   }, [activeInteractionId]);
 
@@ -1485,8 +1496,17 @@ export function AgentNextGenPage({
     }
   }, [isNavNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // No hidden gating here — matches lyra-ui's `Panel.stories.tsx` "Side
+  // Panel" story, where `pinned` and `open` are two plain, independent
+  // booleans and nothing about toggling one disables the other's normal
+  // control going forward. Hovering the icon always previews the panel
+  // while unpinned, exactly like that story's `Panel` does — including
+  // right after an icon-click unpin, which previously left a
+  // `sidePanelHoverEnabled` flag permanently `false` for the rest of the
+  // interaction (reset only on leaving the interaction or going narrow) —
+  // a stricter, one-off "click to reopen" behavior that doesn't match the
+  // plain Panel model and that this fixes.
   const onSidePanelHoverStart = () => {
-    if (!sidePanelHoverEnabled) return;
     clearTimeout(sidePanelTimer.current);
     setSidePanelOpen(true);
   };
@@ -1515,9 +1535,6 @@ export function AgentNextGenPage({
     const nextPinned = !sidePanelPinned;
     setSidePanelPinned(nextPinned);
     setSidePanelOpen(nextPinned);
-    // Closing via this toggle is a deliberate action — disable hover-preview
-    // from reopening it behind the user's back; only another click will.
-    if (!nextPinned) setSidePanelHoverEnabled(false);
   };
 
   const MAX_PANEL_HEIGHT = 860;
@@ -2222,8 +2239,8 @@ export function AgentNextGenPage({
                             pinned={sidePanelPinned}
                             onToggle={handleSidePanelIconToggle}
                             icon={<User className="h-4 w-4" strokeWidth={1.5} aria-hidden="true" />}
-                            pinnedLabel="Unpin Designer panel"
-                            unpinnedLabel="Pin Designer panel"
+                            pinnedLabel={sidePanelToggleLabel ?? "Toggle Overview"}
+                            unpinnedLabel={sidePanelToggleLabel ?? "Toggle Overview"}
                           />
                         </span>
                       }
@@ -2280,7 +2297,7 @@ export function AgentNextGenPage({
                     />
                   )}
                   {showPageHeader && (
-                    <TabList className="px-6 bg-lyra-bg-surface-base shrink-0">
+                    <TabList overflowMenu className="px-6 bg-lyra-bg-surface-base shrink-0">
                       <Tab active={activeDeskTab === "home"} onClick={() => setActiveDeskTab("home")}>
                         Dashboard
                       </Tab>

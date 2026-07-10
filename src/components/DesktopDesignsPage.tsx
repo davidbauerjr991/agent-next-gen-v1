@@ -193,7 +193,7 @@ export function DesktopDesignsPage({ showChip = false, onAiPanelToggle }: { show
       }
     >
       {/* ════ Tabs ════ */}
-      <TabList className="px-6">
+      <TabList overflowMenu className="px-6">
         <Tab active={activeTab === "library"} onClick={() => setActiveTab("library")}>Custom Desktops</Tab>
         <Tab active={activeTab === "templates"} onClick={() => setActiveTab("templates")}>Templates</Tab>
       </TabList>
