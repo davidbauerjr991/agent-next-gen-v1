@@ -8,6 +8,7 @@ import {
   CXoneLogo,
   Overlay,
   AiPanel,
+  DraggablePanel,
   NotificationsBell,
   AgentNotifications,
   AgentProfile,
@@ -17,7 +18,7 @@ import {
   PanelPinButton,
   PageHeader,
   Button,
-  AiIcon,
+  AiSparkleIcon,
   Tag,
   Input,
   LeftNav,
@@ -46,8 +47,9 @@ import {
   DateRangePicker,
   filterChipVariants,
   Menu,
+  Select,
   Tooltip,
-  ActionIconButton,
+  type SelectOption,
   type NavItem,
   type SortDirection,
   type DateRange,
@@ -65,9 +67,8 @@ import { CREATE_NEW_AGENTS } from "@nicecxone/lyra-ui/agents-data";
 import { CREATE_NEW_CUSTOMERS } from "@nicecxone/lyra-ui/customers-data";
 import appIcon from "@/assets/app-icon.svg";
 import {
-  Monitor,
+  Home,
   Settings,
-  CircleHelp,
   Phone,
   PhoneOutgoing,
   PhoneIncoming,
@@ -93,6 +94,8 @@ import {
   User,
   Info,
   Inbox,
+  CalendarDays,
+  MonitorUp,
   type LucideIcon,
 } from "lucide-react";
 
@@ -351,25 +354,37 @@ function formatElapsedTime(totalSeconds: number): string {
 
 /* ── Left nav items ──
    Built from whether an interaction is currently active (see
-   `activeInteraction` below) rather than a static array, so "Desk" stops
-   showing as active — and becomes clickable to navigate back — the moment
-   an assignment takes over the main content area. "Settings" sits below
-   Desk as a plain rail item (same convention as lyra-ux-templates' and the
+   `activeInteraction` below) rather than a static array, so "Home" (the
+   rail item — still routes to the Desk dashboard) stops showing as active —
+   and becomes clickable to navigate back — the moment an assignment takes
+   over the main content area. "Settings" sits below Home as a plain rail
+   item (same convention as lyra-ux-templates' and the
    lyra-ui template story's own `buildNavItems`/`NAV_ITEMS`, both of which
    already end their rail with a Settings item) rather than a standalone
-   AppHeader icon — see the `actions` block below, which no longer has one. */
+   AppHeader icon — see the `actions` block below, which no longer has one.
+   Settings is now a real third view (see `showSettings` state) — clicking
+   it opens a blank "Settings" page in the content column and highlights
+   this rail item, same on/off-exclusivity as Home vs. an active
+   interaction. */
 
-function buildNavItems(hasActiveInteraction: boolean, onDeskClick: () => void): NavItem[] {
+function buildNavItems(
+  hasActiveInteraction: boolean,
+  onDeskClick: () => void,
+  showSettings: boolean,
+  onSettingsClick: () => void
+): NavItem[] {
   return [
     {
-      icon: <Monitor className="h-4 w-4" strokeWidth={1.5} />,
-      label: "Desk",
-      active: !hasActiveInteraction,
+      icon: <Home className="h-4 w-4" strokeWidth={1.5} />,
+      label: "Home",
+      active: !hasActiveInteraction && !showSettings,
       onClick: onDeskClick,
     },
     {
       icon: <Settings className="h-4 w-4" strokeWidth={1.5} />,
       label: "Settings",
+      active: showSettings,
+      onClick: onSettingsClick,
     },
   ];
 }
@@ -1299,6 +1314,17 @@ type Page = "agent-workspace" | "agent" | "outbound" | "login";
 
 const AI_PANEL_DEFAULT_WIDTH = 360;
 
+// Screen Pop — external apps an agent can pop the current contact/record
+// into. Dummy list; wiring an actual screen-pop integration per app is out
+// of scope for now.
+const SCREEN_POP_APPS: SelectOption[] = [
+  { value: "salesforce", label: "Salesforce" },
+  { value: "zendesk",    label: "Zendesk" },
+  { value: "servicenow", label: "ServiceNow" },
+  { value: "hubspot",    label: "HubSpot" },
+  { value: "freshdesk",  label: "Freshdesk" },
+];
+
 export function AgentNextGenPage({
   showPageHeader = false,
   showPanelToggle = false,
@@ -1356,6 +1382,23 @@ export function AgentNextGenPage({
     return () => clearInterval(id);
   }, []);
   const [activeDeskTab, setActiveDeskTab] = useState<"home" | "customers" | "accounts" | "tickets" | "interactions" | "wem">("home");
+  /* Settings — a third top-level view alongside Desk/interaction-record,
+     shown in place of both in the content column when the Settings rail
+     item is clicked. Mutually exclusive with an active interaction: opening
+     one closes the other. Interaction → Settings is enforced below via an
+     effect (selecting/starting any interaction always takes over the
+     content column, same "one primary view at a time" rule Desk already
+     follows per `buildNavItems`'s `active: !hasActiveInteraction`); Settings
+     → interaction is enforced the other way, directly in the `LeftNav`
+     `onSettingsClick` handler, since there's only that one call site
+     (unlike `setActiveInteractionId`, which has several). */
+  const [showSettings, setShowSettings] = useState(false);
+
+  // Effect rather than touching every `setActiveInteractionId` call site
+  // individually.
+  useEffect(() => {
+    if (activeInteractionId) setShowSettings(false);
+  }, [activeInteractionId]);
   const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
   const [notifications, setNotifications] = useState(INITIAL_NOTIFICATIONS);
   const [agentStatus, setAgentStatus] = useState<AgentStatus>("offline");
@@ -1386,7 +1429,18 @@ export function AgentNextGenPage({
   const [aiPanelOpen,  setAiPanelOpen]  = useState(false);
   const [aiMounted,    setAiMounted]    = useState(false);
   const [aiState,      setAiState]      = useState<PanelState>("closed");
-  const [aiVariant,    setAiVariant]    = useState<DraggableVariant>("docked");
+  // Defaults to "float" (a transient, portal-positioned panel anchored
+  // under the trigger button — same pattern as `notifVariant` below and
+  // the same behavior lyra-ui's own `AppHeader.stories.tsx`/
+  // `AgentNextGenTemplate.stories.tsx` demonstrate for this exact button:
+  // `ReactDOM.createPortal` + `getBoundingClientRect()`-derived fixed
+  // position, not a layout-pushing docked panel). This had drifted to
+  // `"docked"` — opening the full docked side panel immediately on first
+  // click instead of the floating popover-style panel lyra-ui shows —
+  // caught by the user comparing behavior directly. "docked" is still
+  // reachable afterward (dragging the panel to the edge, same as
+  // Notifications), just no longer the default on first open.
+  const [aiVariant,    setAiVariant]    = useState<DraggableVariant>("float");
   const [aiWidth,      setAiWidth]      = useState(AI_PANEL_DEFAULT_WIDTH);
   const [aiHeight,     setAiHeight]     = useState(860);
   const [aiIsResizing, setAiIsResizing] = useState(false);
@@ -1404,11 +1458,57 @@ export function AgentNextGenPage({
   const [notifWidth,      setNotifWidth]      = useState(360);
   const [notifHeight,     setNotifHeight]     = useState(860);
   const [notifIsResizing, setNotifIsResizing] = useState(false);
-  const [topPanel,        setTopPanel]        = useState<"ai" | "notif" | null>(null);
   const notifFloatLeft = useRef<number | null>(null);
   const notifFloatTop  = useRef<number | null>(null);
   const notifPanelRef  = useRef<HTMLDivElement>(null);
   const notifAnimTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  /* Conversations panel state — blank `DraggablePanel` (lyra-ui), same
+     open/mounted/state/variant/size/position shape as AI and Notifications
+     above (see the shared `dockPanelExclusively`/`getFloatStyle` helpers
+     below, which generalize the single-dock rule across all four panels
+     instead of hand-duplicating pairwise checks a third and fourth time). */
+  const [convOpen,       setConvOpen]       = useState(false);
+  const [convMounted,    setConvMounted]    = useState(false);
+  const [convState,      setConvState]      = useState<PanelState>("closed");
+  const [convVariant,    setConvVariant]    = useState<DraggableVariant>("float");
+  const [convWidth,      setConvWidth]      = useState(360);
+  const [convHeight,     setConvHeight]     = useState(860);
+  const [convIsResizing, setConvIsResizing] = useState(false);
+  const convFloatLeft = useRef<number | null>(null);
+  const convFloatTop  = useRef<number | null>(null);
+  const convPanelRef  = useRef<HTMLDivElement>(null);
+  const convAnimTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  /* Schedule panel state — same shape as Conversations above */
+  const [schedOpen,       setSchedOpen]       = useState(false);
+  const [schedMounted,    setSchedMounted]    = useState(false);
+  const [schedState,      setSchedState]      = useState<PanelState>("closed");
+  const [schedVariant,    setSchedVariant]    = useState<DraggableVariant>("float");
+  const [schedWidth,      setSchedWidth]      = useState(360);
+  const [schedHeight,     setSchedHeight]     = useState(860);
+  const [schedIsResizing, setSchedIsResizing] = useState(false);
+  const schedFloatLeft = useRef<number | null>(null);
+  const schedFloatTop  = useRef<number | null>(null);
+  const schedPanelRef  = useRef<HTMLDivElement>(null);
+  const schedAnimTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  /* Screen Pop panel state — same shape as Conversations/Schedule above */
+  const [popOpen,       setPopOpen]       = useState(false);
+  const [popMounted,    setPopMounted]    = useState(false);
+  const [popState,      setPopState]      = useState<PanelState>("closed");
+  const [popVariant,    setPopVariant]    = useState<DraggableVariant>("float");
+  const [popWidth,      setPopWidth]      = useState(360);
+  const [popHeight,     setPopHeight]     = useState(860);
+  const [popIsResizing, setPopIsResizing] = useState(false);
+  const popFloatLeft = useRef<number | null>(null);
+  const popFloatTop  = useRef<number | null>(null);
+  const popPanelRef  = useRef<HTMLDivElement>(null);
+  const popAnimTimer = useRef<ReturnType<typeof setTimeout>>();
+  const [screenPopApp, setScreenPopApp] = useState("");
+
+  /* z-index "bring to front" ordering, shared by all five draggable panels */
+  const [topPanel, setTopPanel] = useState<"ai" | "notif" | "conversations" | "schedule" | "screenpop" | null>(null);
 
   /* Interior panel (right) */
   const [interiorPanelOpen, setInteriorPanelOpen] = useState(false);
@@ -1816,95 +1916,165 @@ export function AgentNextGenPage({
     setShowWelcomeModal(false);
   };
 
-  /* AI panel show/hide */
-  useEffect(() => {
-    clearTimeout(aiAnimTimer.current);
-    if (aiPanelOpen) {
-      if (containerRef.current && aiFloatLeft.current === null) {
-        const r = containerRef.current.getBoundingClientRect();
-        aiFloatLeft.current = r.left + containerRef.current.offsetWidth - aiWidth - 16;
+  /* Generic open/close state machine, shared by all five draggable panels
+     (AI, Notifications, Conversations, Schedule, Screen Pop) — mounts on
+     open, transitions through the shared fade/slide animation on close,
+     then unmounts. */
+  const usePanelOpenEffect = (
+    open: boolean,
+    setMounted: (v: boolean) => void,
+    setState: (v: PanelState) => void,
+    setHeight: (v: number) => void,
+    setTop: (v: "ai" | "notif" | "conversations" | "schedule" | "screenpop" | null) => void,
+    topKey: "ai" | "notif" | "conversations" | "schedule" | "screenpop",
+    floatLeft: React.MutableRefObject<number | null>,
+    width: number,
+    animTimer: React.MutableRefObject<ReturnType<typeof setTimeout> | undefined>
+  ) => {
+    useEffect(() => {
+      clearTimeout(animTimer.current);
+      if (open) {
+        if (containerRef.current && floatLeft.current === null) {
+          const r = containerRef.current.getBoundingClientRect();
+          floatLeft.current = r.left + containerRef.current.offsetWidth - width - 16;
+        }
+        setHeight(computePanelHeight());
+        setMounted(true);
+        setState("open");
+        setTop(topKey);
+      } else {
+        setState("closing");
+        animTimer.current = setTimeout(() => setState("closed"), 150);
       }
-      setAiHeight(computePanelHeight());
-      setAiMounted(true);
-      setAiState("open");
-      setTopPanel("ai");
-    } else {
-      setAiState("closing");
-      aiAnimTimer.current = setTimeout(() => setAiState("closed"), 150);
-    }
-    return () => clearTimeout(aiAnimTimer.current);
-  }, [aiPanelOpen]);
+      return () => clearTimeout(animTimer.current);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open]);
 
-  /* Shrink panel height with viewport when open */
-  useEffect(() => {
-    if (!aiPanelOpen) return;
-    const onResize = () => setAiHeight(computePanelHeight());
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [aiPanelOpen]);
+    // Shrink panel height with viewport when open
+    useEffect(() => {
+      if (!open) return;
+      const onResize = () => setHeight(computePanelHeight());
+      window.addEventListener("resize", onResize);
+      return () => window.removeEventListener("resize", onResize);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open]);
+  };
 
-  /* Notifications panel show/hide — same state machine as AI panel */
-  useEffect(() => {
-    clearTimeout(notifAnimTimer.current);
-    if (notifOpen) {
-      if (containerRef.current && notifFloatLeft.current === null) {
+  usePanelOpenEffect(aiPanelOpen, setAiMounted, setAiState, setAiHeight, setTopPanel, "ai", aiFloatLeft, aiWidth, aiAnimTimer);
+  usePanelOpenEffect(notifOpen,   setNotifMounted, setNotifState, setNotifHeight, setTopPanel, "notif", notifFloatLeft, notifWidth, notifAnimTimer);
+  usePanelOpenEffect(convOpen,     setConvMounted, setConvState, setConvHeight, setTopPanel, "conversations", convFloatLeft, convWidth, convAnimTimer);
+  usePanelOpenEffect(schedOpen,   setSchedMounted, setSchedState, setSchedHeight, setTopPanel, "schedule", schedFloatLeft, schedWidth, schedAnimTimer);
+  usePanelOpenEffect(popOpen,     setPopMounted, setPopState, setPopHeight, setTopPanel, "screenpop", popFloatLeft, popWidth, popAnimTimer);
+
+  /* Single-dock rule (documented in lyra-ui's draggable.tsx): only one
+     panel may be docked at a time. Generalized across all five panels
+     instead of the old pairwise "if AI is docked, force it to float"
+     checks — each panel here would otherwise need four near-identical
+     checks (one per sibling), which stops scaling the moment a third
+     (or fifth) panel is added. `dockPanelExclusively` looks at every
+     *other* panel and floats whichever one is currently docked. */
+  const dockPanelExclusively = (dockingKey: "ai" | "notif" | "conversations" | "schedule" | "screenpop") => {
+    const panels: Record<
+      "ai" | "notif" | "conversations" | "schedule" | "screenpop",
+      { variant: DraggableVariant; setVariant: (v: DraggableVariant) => void; width: number; floatLeft: React.MutableRefObject<number | null>; floatTop: React.MutableRefObject<number | null> }
+    > = {
+      ai:            { variant: aiVariant,    setVariant: setAiVariant,    width: aiWidth,    floatLeft: aiFloatLeft,    floatTop: aiFloatTop },
+      notif:         { variant: notifVariant, setVariant: setNotifVariant, width: notifWidth, floatLeft: notifFloatLeft, floatTop: notifFloatTop },
+      conversations: { variant: convVariant,  setVariant: setConvVariant,  width: convWidth,  floatLeft: convFloatLeft,  floatTop: convFloatTop },
+      schedule:      { variant: schedVariant, setVariant: setSchedVariant, width: schedWidth, floatLeft: schedFloatLeft, floatTop: schedFloatTop },
+      screenpop:     { variant: popVariant,   setVariant: setPopVariant,   width: popWidth,   floatLeft: popFloatLeft,   floatTop: popFloatTop },
+    };
+    (Object.keys(panels) as Array<keyof typeof panels>).forEach((key) => {
+      if (key === dockingKey) return;
+      const p = panels[key];
+      if (p.variant === "docked" && containerRef.current) {
         const r = containerRef.current.getBoundingClientRect();
-        notifFloatLeft.current = r.left + containerRef.current.offsetWidth - notifWidth - 16;
+        p.floatLeft.current = r.left + containerRef.current.offsetWidth - p.width - 16;
+        p.floatTop.current  = null; // use computed default top
+        p.setVariant("float");
       }
-      setNotifHeight(computePanelHeight());
-      setNotifMounted(true);
-      setNotifState("open");
-      setTopPanel("notif");
-    } else {
-      setNotifState("closing");
-      notifAnimTimer.current = setTimeout(() => setNotifState("closed"), 150);
+    });
+  };
+
+  // When docking: capture actual rendered position (includes CSS transform
+  // drag offset) before the float wrapper unmounts — restored when undocking.
+  const captureFloatPosition = (
+    panelRef: React.RefObject<HTMLDivElement | null>,
+    floatLeft: React.MutableRefObject<number | null>,
+    floatTop: React.MutableRefObject<number | null>
+  ) => {
+    if (panelRef.current) {
+      const r = panelRef.current.getBoundingClientRect();
+      floatLeft.current = r.left;
+      floatTop.current  = r.top;
     }
-    return () => clearTimeout(notifAnimTimer.current);
-  }, [notifOpen]);
+  };
 
-  useEffect(() => {
-    if (!notifOpen) return;
-    const onResize = () => setNotifHeight(computePanelHeight());
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [notifOpen]);
-
+  const handleAiVariantChange = (v: DraggableVariant) => {
+    if (v === "docked") {
+      captureFloatPosition(aiPanelRef, aiFloatLeft, aiFloatTop);
+      dockPanelExclusively("ai");
+    }
+    setAiVariant(v);
+  };
   const handleNotifVariantChange = (v: DraggableVariant) => {
-    // When docking: capture actual rendered position (includes CSS transform drag offset)
-    // before the float wrapper unmounts. This is restored when undocking.
-    if (v === "docked" && notifPanelRef.current) {
-      const r = notifPanelRef.current.getBoundingClientRect();
-      notifFloatLeft.current = r.left;
-      notifFloatTop.current  = r.top;
-    }
-    // Single-dock rule: if docking and AI panel is already docked, force AI to float.
-    // AI has no float wrapper right now so fall back to a computed default position.
-    if (v === "docked" && aiVariant === "docked" && containerRef.current) {
-      const r = containerRef.current.getBoundingClientRect();
-      aiFloatLeft.current = r.left + containerRef.current.offsetWidth - aiWidth - 16;
-      aiFloatTop.current  = null; // use computed default top
-      setAiVariant("float");
+    if (v === "docked") {
+      captureFloatPosition(notifPanelRef, notifFloatLeft, notifFloatTop);
+      dockPanelExclusively("notif");
     }
     setNotifVariant(v);
   };
+  const handleConvVariantChange = (v: DraggableVariant) => {
+    if (v === "docked") {
+      captureFloatPosition(convPanelRef, convFloatLeft, convFloatTop);
+      dockPanelExclusively("conversations");
+    }
+    setConvVariant(v);
+  };
+  const handleSchedVariantChange = (v: DraggableVariant) => {
+    if (v === "docked") {
+      captureFloatPosition(schedPanelRef, schedFloatLeft, schedFloatTop);
+      dockPanelExclusively("schedule");
+    }
+    setSchedVariant(v);
+  };
+  const handlePopVariantChange = (v: DraggableVariant) => {
+    if (v === "docked") {
+      captureFloatPosition(popPanelRef, popFloatLeft, popFloatTop);
+      dockPanelExclusively("screenpop");
+    }
+    setPopVariant(v);
+  };
 
-  const getNotifFloatStyle = (): React.CSSProperties => {
+  // Float position — absolute viewport coordinates, same formula every
+  // panel uses (anchored via its own `floatLeft`/`floatTop` refs once set).
+  const getFloatStyle = (
+    floatLeft: React.MutableRefObject<number | null>,
+    floatTop: React.MutableRefObject<number | null>,
+    width: number,
+    key: "ai" | "notif" | "conversations" | "schedule" | "screenpop"
+  ): React.CSSProperties => {
     const rect = containerRef.current?.getBoundingClientRect();
-    const left = notifFloatLeft.current !== null
-      ? notifFloatLeft.current
+    const left = floatLeft.current !== null
+      ? floatLeft.current
       : containerRef.current
-        ? (rect?.left ?? 0) + containerRef.current.offsetWidth - notifWidth - 16
+        ? (rect?.left ?? 0) + containerRef.current.offsetWidth - width - 16
         : 0;
-    const top = notifFloatTop.current !== null
-      ? notifFloatTop.current
+    const top = floatTop.current !== null
+      ? floatTop.current
       : (rect?.top ?? 0);
     return {
       position: "fixed",
       top,
       left,
-      zIndex: topPanel === "notif" ? 10000 : 9999,
+      zIndex: topPanel === key ? 10000 : 9999,
     };
   };
+  const getAiFloatStyle    = () => getFloatStyle(aiFloatLeft, aiFloatTop, aiWidth, "ai");
+  const getNotifFloatStyle = () => getFloatStyle(notifFloatLeft, notifFloatTop, notifWidth, "notif");
+  const getConvFloatStyle   = () => getFloatStyle(convFloatLeft, convFloatTop, convWidth, "conversations");
+  const getSchedFloatStyle = () => getFloatStyle(schedFloatLeft, schedFloatTop, schedWidth, "schedule");
+  const getPopFloatStyle   = () => getFloatStyle(popFloatLeft, popFloatTop, popWidth, "screenpop");
 
   const notifPanel = notifMounted ? (
     <AgentNotifications
@@ -1923,47 +2093,9 @@ export function AgentNextGenPage({
       }
       onClose={() => setNotifOpen(false)}
       defaultWidth={notifWidth}
-      maxWidth={600}
       height={notifHeight}
     />
   ) : null;
-
-  const handleAiVariantChange = (v: DraggableVariant) => {
-    // When docking: capture actual rendered position (includes CSS transform drag offset)
-    // before the float wrapper unmounts. This is restored when undocking.
-    if (v === "docked" && aiPanelRef.current) {
-      const r = aiPanelRef.current.getBoundingClientRect();
-      aiFloatLeft.current = r.left;
-      aiFloatTop.current  = r.top;
-    }
-    // Single-dock rule: if docking and notif panel is already docked, force notif to float.
-    // Notif has no float wrapper right now so fall back to a computed default position.
-    if (v === "docked" && notifVariant === "docked" && containerRef.current) {
-      const r = containerRef.current.getBoundingClientRect();
-      notifFloatLeft.current = r.left + containerRef.current.offsetWidth - notifWidth - 16;
-      notifFloatTop.current  = null; // use computed default top
-      setNotifVariant("float");
-    }
-    setAiVariant(v);
-  };
-
-  const getAiFloatStyle = (): React.CSSProperties => {
-    const rect = containerRef.current?.getBoundingClientRect();
-    const left = aiFloatLeft.current !== null
-      ? aiFloatLeft.current
-      : containerRef.current
-        ? (rect?.left ?? 0) + containerRef.current.offsetWidth - aiWidth - 16
-        : 0;
-    const top = aiFloatTop.current !== null
-      ? aiFloatTop.current
-      : (rect?.top ?? 0);
-    return {
-      position: "fixed",
-      top,
-      left,
-      zIndex: topPanel === "ai" ? 10000 : 9999,
-    };
-  };
 
   const aiPanel = aiMounted ? (
     <AiPanel
@@ -1971,7 +2103,6 @@ export function AgentNextGenPage({
       draggable
       draggableVariant={aiVariant}
       defaultDraggableWidth={aiWidth}
-      maxDraggableWidth={600}
       defaultDraggableHeight={aiHeight}
       onVariantChange={handleAiVariantChange}
       onWidthChange={setAiWidth}
@@ -1988,20 +2119,70 @@ export function AgentNextGenPage({
     />
   ) : null;
 
-  // Shared "Ask AI" PageHeader action — same button, same `aiPanelOpen`
-  // toggle, whether the header is showing the Desk dashboard or an active
-  // interaction's record page.
-  const askAiButton = (
-    <Button
-      variant="outline"
-      onClick={() => setAiPanelOpen((v) => !v)}
-      aria-expanded={aiPanelOpen}
-      className={aiPanelOpen ? "bg-lyra-state-hover" : undefined}
-    >
-      <AiIcon className="h-4 w-4" />
-      Ask AI
-    </Button>
-  );
+  // Conversations/Schedule — blank `DraggablePanel` (lyra-ui), same shape as
+  // AI/Notifications above but with no content of its own yet.
+  const conversationsPanel = convMounted ? (
+    <DraggablePanel
+      ref={convPanelRef}
+      title="Conversations"
+      draggableVariant={convVariant}
+      onVariantChange={handleConvVariantChange}
+      defaultWidth={convWidth}
+      height={convHeight}
+      onWidthChange={setConvWidth}
+      onResizeStateChange={setConvIsResizing}
+      onInteract={() => setTopPanel("conversations")}
+      onClose={() => setConvOpen(false)}
+      className={convVariant === "docked" ? "h-full" : undefined}
+    />
+  ) : null;
+
+  const schedulePanel = schedMounted ? (
+    <DraggablePanel
+      ref={schedPanelRef}
+      title="Schedule"
+      draggableVariant={schedVariant}
+      onVariantChange={handleSchedVariantChange}
+      defaultWidth={schedWidth}
+      height={schedHeight}
+      onWidthChange={setSchedWidth}
+      onResizeStateChange={setSchedIsResizing}
+      onInteract={() => setTopPanel("schedule")}
+      onClose={() => setSchedOpen(false)}
+      className={schedVariant === "docked" ? "h-full" : undefined}
+    />
+  ) : null;
+
+  // Screen Pop — `DraggablePanel` (lyra-ui), same shape as
+  // Conversations/Schedule above, with a Select to choose which external
+  // app to pop the current contact/record into. The Select lives in
+  // `headerContent` (fixed above the divider, alongside the title row)
+  // rather than the scrollable body, so it stays put — no `label` since
+  // the field sits in the header, not a body form, where a label would be
+  // redundant.
+  const screenPopPanel = popMounted ? (
+    <DraggablePanel
+      ref={popPanelRef}
+      title="Screen Pop"
+      draggableVariant={popVariant}
+      onVariantChange={handlePopVariantChange}
+      defaultWidth={popWidth}
+      height={popHeight}
+      onWidthChange={setPopWidth}
+      onResizeStateChange={setPopIsResizing}
+      onInteract={() => setTopPanel("screenpop")}
+      onClose={() => setPopOpen(false)}
+      className={popVariant === "docked" ? "h-full" : undefined}
+      headerContent={
+        <Select
+          placeholder="Select an app..."
+          options={SCREEN_POP_APPS}
+          value={screenPopApp}
+          onValueChange={setScreenPopApp}
+        />
+      }
+    />
+  ) : null;
 
   return (
     <div className="flex flex-col h-screen bg-lyra-bg-surface-shell overflow-hidden animate-in fade-in-0 duration-500">
@@ -2037,26 +2218,102 @@ export function AgentNextGenPage({
         }
         actions={
           <>
-            {/* Help sits directly left of Notifications — matches every
-                other AppHeader usage in this app/codebase (Header.tsx,
-                AppHeader.stories.tsx) that has a Help icon at all. Settings
-                moved out of this row entirely — see `buildNavItems` above,
-                it's now the LeftNav rail item below Desk instead. Opens the
-                CXone Agent help docs in a new tab — "noopener,noreferrer" so
-                that tab can't reach back into this app via `window.opener`. */}
-            <ActionIconButton
-              size="xl"
-              title="Help"
-              onClick={() => window.open("https://help.nicecxone.com/content/agent/cxoneagent/cxoneagent.htm?cshid=CXoneAgent", "_blank", "noopener,noreferrer")}
-            >
-              <CircleHelp className="h-5 w-5" strokeWidth={1.5} />
-            </ActionIconButton>
+            {/* Screen Pop / Conversations / Schedule — same hand-rolled
+                trigger shape as Notifications/Ask AI (`h-10 w-10
+                rounded-lyra-lg text-lyra-fg-default`, Tooltip-wrapped) and
+                open the same blank, draggable/dockable `DraggablePanel`
+                (lyra-ui) each titled to match its own trigger's label, per
+                request. Labeled "Conversations" (renamed from "Messages" —
+                same trigger/panel, just the label). Screen Pop sits to the
+                left of Conversations, using lucide's `MonitorUp` (monitor +
+                up arrow) to match the requested icon exactly. */}
+            <Tooltip content="Screen Pop" placement="bottom" asLabel>
+              <button
+                type="button"
+                aria-label="Screen Pop"
+                aria-expanded={popOpen}
+                onClick={() => setPopOpen((v) => !v)}
+                className={cn(
+                  "relative flex h-10 w-10 items-center justify-center rounded-lyra-lg text-lyra-fg-default transition-colors hover:bg-lyra-state-hover active:bg-lyra-state-pressed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus",
+                  popOpen && "bg-lyra-state-hover"
+                )}
+              >
+                <MonitorUp className="h-5 w-5" strokeWidth={1.5} />
+              </button>
+            </Tooltip>
+            <Tooltip content="Conversations" placement="bottom" asLabel>
+              <button
+                type="button"
+                aria-label="Conversations"
+                aria-expanded={convOpen}
+                onClick={() => setConvOpen((v) => !v)}
+                className={cn(
+                  "relative flex h-10 w-10 items-center justify-center rounded-lyra-lg text-lyra-fg-default transition-colors hover:bg-lyra-state-hover active:bg-lyra-state-pressed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus",
+                  convOpen && "bg-lyra-state-hover"
+                )}
+              >
+                <MessageSquare className="h-5 w-5" strokeWidth={1.5} />
+              </button>
+            </Tooltip>
+            <Tooltip content="Schedule" placement="bottom" asLabel>
+              <button
+                type="button"
+                aria-label="Schedule"
+                aria-expanded={schedOpen}
+                onClick={() => setSchedOpen((v) => !v)}
+                className={cn(
+                  "relative flex h-10 w-10 items-center justify-center rounded-lyra-lg text-lyra-fg-default transition-colors hover:bg-lyra-state-hover active:bg-lyra-state-pressed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus",
+                  schedOpen && "bg-lyra-state-hover"
+                )}
+              >
+                <CalendarDays className="h-5 w-5" strokeWidth={1.5} />
+              </button>
+            </Tooltip>
             <NotificationsBell
               notifications={notifications}
               open={notifOpen}
               onOpenChange={setNotifOpen}
               renderPanel={false}
             />
+            {/* Sole "Ask AI" entry point — the PageHeader labeled button
+                (Desk dashboard and the record-page header) was removed so
+                this AppHeader icon is the only trigger for `aiPanelOpen`/
+                `AiPanel` now.
+                Matches lyra-ui's canonical markup exactly, not an
+                `ActionIconButton` approximation: a hand-rolled `<button>`
+                (`h-10 w-10 rounded-lyra-lg text-lyra-fg-default`, identical
+                to `NotificationsBell`'s own trigger) wrapped in a real
+                `Tooltip`, rendering lyra-ui's exported `AiSparkleIcon` — the
+                same solid-color sparkle mark `AgentNextGenTemplate.stories.tsx`
+                and `lyra-ux-templates`' `AgentNextGenPage.tsx` both use here.
+                This app had drifted to lucide's `Sparkles` icon inside an
+                `ActionIconButton` (different icon shape *and* a different
+                border radius, `rounded-lyra-sm`) — caught when the user
+                compared this app against lyra-ui directly and it visibly
+                didn't match. See the "check lyra-ui's own markup, not just
+                an approximation" pattern under Important Patterns below. */}
+            <Tooltip content="Ask AI" placement="bottom" asLabel>
+              <button
+                type="button"
+                aria-label="Ask AI"
+                aria-expanded={aiPanelOpen}
+                onClick={() => setAiPanelOpen((v) => !v)}
+                className={cn(
+                  "relative flex h-10 w-10 items-center justify-center rounded-lyra-lg text-lyra-fg-default transition-colors hover:bg-lyra-state-hover active:bg-lyra-state-pressed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus",
+                  aiPanelOpen && "bg-lyra-state-hover"
+                )}
+              >
+                <AiSparkleIcon />
+              </button>
+            </Tooltip>
+            {/* Separator between the icon-button row (Screen Pop through Ask
+                AI) and AgentProfile — `orientation="vertical"` + `h-auto
+                self-stretch` is the same sizing lyra-ui's own vertical
+                Divider usage uses (see `dashboard-card.tsx`'s metric-row
+                divider) so it stretches to match the row's height inside
+                AppHeader's `flex items-center` actions container instead of
+                a hand-picked fixed height. */}
+            <Divider orientation="vertical" className="h-auto self-stretch" />
             <AgentProfile
               name="John Smith"
               initials="JS"
@@ -2065,6 +2322,12 @@ export function AgentNextGenPage({
               onDarkModeToggle={handleDarkModeToggle}
               isDarkMode={darkMode}
               timer={formattedTimer}
+              // Standalone AppHeader "?" icon removed — this app now uses
+              // `AgentProfile`'s own conditional "Help" row instead (renders
+              // below "Agent Leg Disconnected" whenever `onHelpClick` is
+              // passed; see agent-profile.tsx). Same destination/new-tab
+              // behavior as the removed icon button.
+              onHelpClick={() => window.open("https://help.nicecxone.com/content/agent/cxoneagent/cxoneagent.htm?cshid=CXoneAgent", "_blank", "noopener,noreferrer")}
               onLogOut={() => onNavigate?.("login")}
               className="ml-1"
             />
@@ -2077,7 +2340,12 @@ export function AgentNextGenPage({
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
         <LeftNav
-          items={buildNavItems(Boolean(activeInteraction), () => setActiveInteractionId(null))}
+          items={buildNavItems(
+            Boolean(activeInteraction),
+            () => { setActiveInteractionId(null); setShowSettings(false); },
+            showSettings,
+            () => { setShowSettings(true); setActiveInteractionId(null); }
+          )}
           open={navOpen}
           onToggle={() => setNavOpen((v) => !v)}
           overlay={isNavNarrow}
@@ -2195,7 +2463,18 @@ export function AgentNextGenPage({
 
             {/* Content column: PageHeader + page body */}
             <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
-              {activeInteraction ? (
+              {showSettings ? (
+                // ── Settings — a blank page for now (real settings content
+                // isn't built yet), same "just the header, blank body below"
+                // placeholder pattern the interaction record view below
+                // uses. Takes priority over both Desk and an active
+                // interaction — see the `showSettings` state's own doc
+                // comment for how the three views stay mutually exclusive.
+                <>
+                  {showPageHeader && <PageHeader title="Settings" />}
+                  <div className="flex-1 overflow-y-auto" />
+                </>
+              ) : activeInteraction ? (
                 // ── Active interaction's detail page — replaces the Desk
                 // dashboard the moment a new assignment is started/quick-
                 // dialed/redialed (see `activeInteraction` above). Just the
@@ -2247,7 +2526,6 @@ export function AgentNextGenPage({
                       iconAriaHidden={false}
                       title={activeInteraction.customerName ?? "Customer"}
                       subtitle={activeInteraction.recordId}
-                      actions={askAiButton}
                     />
                   )}
                   {/* One tab per open channel — kept in sync with the same
@@ -2283,19 +2561,6 @@ export function AgentNextGenPage({
                 </>
               ) : (
                 <>
-                  {showPageHeader && (
-                    <PageHeader
-                      title="Desk"
-                      // Sole "Ask AI" entry point — the earlier icon-only
-                      // AppHeader trigger was removed since this labeled
-                      // PageHeader button covers the same `aiPanelOpen`/
-                      // `AiPanel` instance. Icon: lyra-ui's own
-                      // PageHeader.stories.tsx already demonstrates this exact
-                      // "Ask AI" action button using its colored `AiIcon` —
-                      // reused here verbatim.
-                      actions={askAiButton}
-                    />
-                  )}
                   {showPageHeader && (
                     <TabList overflowMenu className="px-6 bg-lyra-bg-surface-base shrink-0">
                       <Tab active={activeDeskTab === "home"} onClick={() => setActiveDeskTab("home")}>
@@ -2500,6 +2765,60 @@ export function AgentNextGenPage({
             </div>
           )}
 
+          {/* Conversations — float (same CSS transition pattern as Notifications/AI) */}
+          {convVariant === "float" && convMounted && (
+            <div
+              style={{
+                ...getConvFloatStyle(),
+                pointerEvents: "none",
+                visibility: convState === "closed" ? "hidden" : "visible",
+                opacity: convState === "open" ? 1 : 0,
+                transform: convState === "open" ? "translateY(0)" : "translateY(-8px)",
+                transition: convState === "open"
+                  ? "opacity 150ms ease, transform 150ms ease"
+                  : "opacity 100ms ease, transform 100ms ease",
+              }}
+            >
+              {conversationsPanel}
+            </div>
+          )}
+
+          {/* Schedule — float (same CSS transition pattern as Notifications/AI) */}
+          {schedVariant === "float" && schedMounted && (
+            <div
+              style={{
+                ...getSchedFloatStyle(),
+                pointerEvents: "none",
+                visibility: schedState === "closed" ? "hidden" : "visible",
+                opacity: schedState === "open" ? 1 : 0,
+                transform: schedState === "open" ? "translateY(0)" : "translateY(-8px)",
+                transition: schedState === "open"
+                  ? "opacity 150ms ease, transform 150ms ease"
+                  : "opacity 100ms ease, transform 100ms ease",
+              }}
+            >
+              {schedulePanel}
+            </div>
+          )}
+
+          {/* Screen Pop — float (same CSS transition pattern as Notifications/AI) */}
+          {popVariant === "float" && popMounted && (
+            <div
+              style={{
+                ...getPopFloatStyle(),
+                pointerEvents: "none",
+                visibility: popState === "closed" ? "hidden" : "visible",
+                opacity: popState === "open" ? 1 : 0,
+                transform: popState === "open" ? "translateY(0)" : "translateY(-8px)",
+                transition: popState === "open"
+                  ? "opacity 150ms ease, transform 150ms ease"
+                  : "opacity 100ms ease, transform 100ms ease",
+              }}
+            >
+              {screenPopPanel}
+            </div>
+          )}
+
         </div>
 
         {/* Notifications — docked (sibling of containerRef so flex layout keeps it in-bounds) */}
@@ -2540,6 +2859,69 @@ export function AgentNextGenPage({
               }}
             >
               {aiPanel}
+            </div>
+          </div>
+        )}
+
+        {/* Conversations — docked (sibling of containerRef so flex layout keeps it in-bounds) */}
+        {convVariant === "docked" && (
+          <div className="pb-3" style={{
+            width: convState === "open" ? convWidth : 0,
+            marginRight: convState === "open" ? 12 : 0,
+            overflow: "hidden",
+            flexShrink: 0,
+            transition: convIsResizing ? "none" : "width 250ms cubic-bezier(0.4, 0, 0.2, 1)",
+          }}>
+            <div
+              className="h-full animate-in fade-in-0 duration-150"
+              style={{
+                width: convWidth,
+                display: convState === "open" ? "block" : "none",
+              }}
+            >
+              {conversationsPanel}
+            </div>
+          </div>
+        )}
+
+        {/* Schedule — docked (sibling of containerRef so flex layout keeps it in-bounds) */}
+        {schedVariant === "docked" && (
+          <div className="pb-3" style={{
+            width: schedState === "open" ? schedWidth : 0,
+            marginRight: schedState === "open" ? 12 : 0,
+            overflow: "hidden",
+            flexShrink: 0,
+            transition: schedIsResizing ? "none" : "width 250ms cubic-bezier(0.4, 0, 0.2, 1)",
+          }}>
+            <div
+              className="h-full animate-in fade-in-0 duration-150"
+              style={{
+                width: schedWidth,
+                display: schedState === "open" ? "block" : "none",
+              }}
+            >
+              {schedulePanel}
+            </div>
+          </div>
+        )}
+
+        {/* Screen Pop — docked (sibling of containerRef so flex layout keeps it in-bounds) */}
+        {popVariant === "docked" && (
+          <div className="pb-3" style={{
+            width: popState === "open" ? popWidth : 0,
+            marginRight: popState === "open" ? 12 : 0,
+            overflow: "hidden",
+            flexShrink: 0,
+            transition: popIsResizing ? "none" : "width 250ms cubic-bezier(0.4, 0, 0.2, 1)",
+          }}>
+            <div
+              className="h-full animate-in fade-in-0 duration-150"
+              style={{
+                width: popWidth,
+                display: popState === "open" ? "block" : "none",
+              }}
+            >
+              {screenPopPanel}
             </div>
           </div>
         )}
