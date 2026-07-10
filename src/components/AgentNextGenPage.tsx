@@ -13,13 +13,15 @@ import {
   AgentProfile,
   Container,
   Panel,
+  PanelPinButton,
   PageHeader,
   Button,
+  AiIcon,
   Tag,
   Input,
   LeftNav,
   CreateNew,
-  OutboundAddButton,
+  useOutboundAddButton,
   InteractionNavItem,
   Table,
   TableHeader,
@@ -36,6 +38,7 @@ import {
   AgentWelcomeMessage,
   TabList,
   Tab,
+  ChannelTab,
   Popover,
   RadioGroup,
   RadioGroupItem,
@@ -43,6 +46,7 @@ import {
   filterChipVariants,
   Menu,
   Tooltip,
+  ActionIconButton,
   type NavItem,
   type SortDirection,
   type DateRange,
@@ -61,10 +65,8 @@ import { CREATE_NEW_CUSTOMERS } from "@nicecxone/lyra-ui/customers-data";
 import appIcon from "@/assets/app-icon.svg";
 import {
   Monitor,
-  Users,
-  BookUser,
-  CalendarDays,
   Settings,
+  CircleHelp,
   Phone,
   PhoneOutgoing,
   PhoneIncoming,
@@ -87,6 +89,7 @@ import {
   RotateCcw,
   UserPlus,
   UserRound,
+  User,
   Info,
   Inbox,
   type LucideIcon,
@@ -244,6 +247,17 @@ interface TrackedChannel {
    *  field. Undefined for quick-dialed/redialed channels, which don't go
    *  through CreateNew's contact flow. */
   value?: string;
+  /** Human-readable version of `value` for display (e.g. "(456) 383-3329"
+   *  vs. `value`'s raw "+14563833329") — looked up from
+   *  `OUTBOUND_CONFIG.phoneOptions` at start-call time, same pattern as
+   *  `preview`/`skillLabel` above. Kept separate from `value` since `value`
+   *  has to stay the raw address for the `openChannelAddresses` dedup match
+   *  in "Select Phone"/etc. to keep working. Shown on this channel's
+   *  `ChannelTab` (see the `activeInteraction` block below) as "SMS |
+   *  (456) 383-3329" — undefined just means the tab shows icon + type label
+   *  with no address (e.g. a redialed voice call, which has no stored
+   *  number at all). */
+  addressLabel?: string;
   /** Whether the customer has sent a message on this channel that the agent
    *  hasn't replied to yet — drives the row's red/critical chip+clock
    *  styling (green/success otherwise). Always omitted (falsy) at
@@ -255,6 +269,25 @@ interface TrackedChannel {
    *  plug in without re-introducing the "every non-voice channel is
    *  permanently red" bug this replaced. */
   awaitingResponse?: boolean;
+  /** Total message count for this channel's conversation, shown only on this
+   *  channel's `ChannelTab` tooltip (see the `activeInteraction` block
+   *  below), never on the tab face itself. There's no real message store in
+   *  this demo, so `handleStartCall`/`handleQuickDial`/`handleRedial` just
+   *  set this directly at channel-creation time: `0` for a freshly started
+   *  outbound conversation on any digital channel (the tooltip reads "0
+   *  Messages", which is correct — nothing's been exchanged yet), left
+   *  `undefined` entirely for voice (no message concept at all, so the
+   *  tooltip's message segment is omitted rather than showing "0 Messages"
+   *  for a channel type that doesn't have messages). */
+  messageCount?: number;
+  /** This channel's own conversation/session id — distinct from
+   *  `ActiveInteraction.recordId` below (the *customer/case* record shown in
+   *  the page header): one record can have several channels open, each its
+   *  own conversation with its own id. Synthesized via
+   *  `generateInteractionId()` at channel-creation time (for every channel
+   *  type, including voice); shown on this channel's `ChannelTab` tooltip as
+   *  "#{interactionId}". */
+  interactionId?: string;
 }
 
 /** One live interaction in the left nav — an agent/customer/team/skill
@@ -266,7 +299,44 @@ interface TrackedChannel {
 interface ActiveInteraction {
   id: string;
   customerName?: string;
+  /** Customer/agent/team/skill record id shown under the name on this
+   *  interaction's detail page header — the contact's real id
+   *  (`CreateNewOutboundContact.subtitle`, e.g. a customerId/agentId) when
+   *  the interaction was started from a known record, `entry.caseId` when
+   *  redialed from Contact History, or a freshly generated case number
+   *  (`generateCaseId`) for quick-dialed numbers with no matching record. */
+  recordId: string;
   channels: TrackedChannel[];
+  /** Which open channel is "current" — shared source of truth between this
+   *  interaction's `InteractionNavItem` card (its `currentChannelKey` prop)
+   *  and its `ChannelTab` bar (each tab's `active`), so clicking either one
+   *  updates the other. A `TrackedChannel.id` (falls back to the last
+   *  channel's own id when unset — see the `?? mostRecentId` reads below —
+   *  same default a fresh interaction already had before this field
+   *  existed). Kept in sync by `handleStartCall`/`handleQuickDial`/
+   *  `handleRedial` (a new/refreshed channel always takes over as current,
+   *  mirroring `InteractionNavItem`'s own auto-select-newest rule) and by
+   *  `handleChannelSelect` (a row or tab click). */
+  currentChannelId?: string;
+}
+
+/** Fallback case id for interactions with no real customer/agent/team/skill
+ *  record behind them (quick-dialed numbers) — same "CS-" + digits shape as
+ *  every other generated case id in this file, just namespaced separately
+ *  since those already-real ids come with their own prefix per record type
+ *  (customerId/agentId/TEAM-.../SKL-.../ASN-...). */
+function generateCaseId(): string {
+  return `CS-${Math.floor(1000000 + Math.random() * 9000000)}`;
+}
+
+/** Synthesized per-channel conversation/session id — same plain-numeric
+ *  shape as the reference screenshot ("#707535188548", 12 digits, no
+ *  prefix) — distinct from `generateCaseId`'s "CS-" shape, which is a
+ *  customer/case-level id, not a per-channel one. See
+ *  `TrackedChannel.interactionId`'s own doc comment for why these are two
+ *  different things. */
+function generateInteractionId(): string {
+  return String(Math.floor(100000000000 + Math.random() * 900000000000));
 }
 
 /** Renders a tick count (seconds since the channel/interaction started) as
@@ -278,31 +348,30 @@ function formatElapsedTime(totalSeconds: number): string {
   return `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 }
 
-/* ── Left nav items ── */
+/* ── Left nav items ──
+   Built from whether an interaction is currently active (see
+   `activeInteraction` below) rather than a static array, so "Desk" stops
+   showing as active — and becomes clickable to navigate back — the moment
+   an assignment takes over the main content area. "Settings" sits below
+   Desk as a plain rail item (same convention as lyra-ux-templates' and the
+   lyra-ui template story's own `buildNavItems`/`NAV_ITEMS`, both of which
+   already end their rail with a Settings item) rather than a standalone
+   AppHeader icon — see the `actions` block below, which no longer has one. */
 
-const NAV_ITEMS: NavItem[] = [
-  {
-    icon: <Monitor className="h-4 w-4" strokeWidth={1.5} />,
-    label: "Desk",
-    active: true,
-  },
-  {
-    icon: <Users className="h-4 w-4" strokeWidth={1.5} />,
-    label: "Contacts",
-  },
-  {
-    icon: <BookUser className="h-4 w-4" strokeWidth={1.5} />,
-    label: "Directory",
-  },
-  {
-    icon: <CalendarDays className="h-4 w-4" strokeWidth={1.5} />,
-    label: "Schedule",
-  },
-  {
-    icon: <Settings className="h-4 w-4" strokeWidth={1.5} />,
-    label: "Settings",
-  },
-];
+function buildNavItems(hasActiveInteraction: boolean, onDeskClick: () => void): NavItem[] {
+  return [
+    {
+      icon: <Monitor className="h-4 w-4" strokeWidth={1.5} />,
+      label: "Desk",
+      active: !hasActiveInteraction,
+      onClick: onDeskClick,
+    },
+    {
+      icon: <Settings className="h-4 w-4" strokeWidth={1.5} />,
+      label: "Settings",
+    },
+  ];
+}
 
 /* ── Sample notifications ── */
 
@@ -1223,16 +1292,6 @@ function InteractionsTable({ interactions }: { interactions: ContactInteraction[
   );
 }
 
-/* ── Sparkle icon (Ask AI) ── */
-
-function AiSparkleIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M17 10C17 9.94181 16.9795 9.88562 16.9424 9.84082C16.9051 9.79597 16.8532 9.76559 16.7959 9.75488L16.7949 9.75391L12.6279 8.96582C12.2329 8.89119 11.8693 8.69934 11.585 8.41504C11.3007 8.13074 11.1088 7.76715 11.0342 7.37207L10.2461 3.20508L10.2451 3.2041C10.2344 3.14679 10.204 3.09487 10.1592 3.05762C10.1144 3.02051 10.0582 3 10 3C9.94182 3 9.88563 3.02051 9.84082 3.05762C9.79597 3.09486 9.76559 3.14679 9.75488 3.2041L9.75391 3.20508L8.96582 7.37207C8.89119 7.76715 8.69934 8.13074 8.41504 8.41504C8.13074 8.69934 7.76715 8.89119 7.37207 8.96582L3.20508 9.75391L3.2041 9.75488C3.14679 9.76559 3.09486 9.79597 3.05762 9.84082C3.02051 9.88563 3 9.94182 3 10C3 10.0582 3.02051 10.1144 3.05762 10.1592C3.07625 10.1816 3.09828 10.2013 3.12305 10.2158L3.2041 10.2451L3.20508 10.2461L7.37207 11.0342C7.76715 11.1088 8.13074 11.3007 8.41504 11.585C8.69934 11.8693 8.89119 12.2329 8.96582 12.6279L9.75391 16.7949L9.75488 16.7959C9.76559 16.8532 9.79597 16.9051 9.84082 16.9424C9.88562 16.9795 9.94181 17 10 17C10.0582 17 10.1144 16.9795 10.1592 16.9424C10.204 16.9051 10.2344 16.8532 10.2451 16.7959L10.2461 16.7949L11.0342 12.6279C11.1088 12.2329 11.3007 11.8693 11.585 11.585C11.8693 11.3007 12.2329 11.1088 12.6279 11.0342L16.7949 10.2461L16.7959 10.2451C16.8532 10.2344 16.9051 10.204 16.9424 10.1592C16.9795 10.1144 17 10.0582 17 10ZM5.00098 15.999C5.00098 15.4469 4.55306 14.999 4.00098 14.999C3.4491 14.9993 3.00195 15.4471 3.00195 15.999C3.0022 16.5507 3.44925 16.9978 4.00098 16.998C4.55291 16.998 5.00073 16.5509 5.00098 15.999ZM6.00098 15.999C6.00073 17.1032 5.1052 17.998 4.00098 17.998C2.89697 17.9978 2.0022 17.103 2.00195 15.999C2.00195 14.8948 2.89682 13.9993 4.00098 13.999C5.10535 13.999 6.00098 14.8947 6.00098 15.999ZM18 10C18 10.2917 17.8983 10.5745 17.7119 10.7988C17.5256 11.0232 17.2662 11.174 16.9795 11.2275L16.9805 11.2285L12.8135 12.0166C12.616 12.0539 12.4341 12.1499 12.292 12.292C12.1499 12.4341 12.0539 12.616 12.0166 12.8135L11.2285 16.9805C11.1748 17.2668 11.023 17.5257 10.7988 17.7119C10.5745 17.8983 10.2917 18 10 18C9.70834 18 9.42555 17.8983 9.20117 17.7119C8.97704 17.5257 8.82516 17.2668 8.77148 16.9805L7.9834 12.8135C7.94609 12.616 7.85013 12.4341 7.70801 12.292C7.56588 12.1499 7.38403 12.0539 7.18652 12.0166L3.01953 11.2285V11.2275C2.73324 11.1738 2.47421 11.0229 2.28809 10.7988C2.10174 10.5745 2 10.2917 2 10C2 9.70834 2.10174 9.42554 2.28809 9.20117C2.47425 8.97704 2.73317 8.82516 3.01953 8.77148L7.18652 7.9834C7.38403 7.94609 7.56588 7.85013 7.70801 7.70801C7.85013 7.56588 7.94609 7.38403 7.9834 7.18652L8.77148 3.01953C8.82516 2.73317 8.97704 2.47425 9.20117 2.28809C9.42554 2.10174 9.70834 2 10 2C10.2917 2 10.5745 2.10174 10.7988 2.28809C11.023 2.47425 11.1748 2.73317 11.2285 3.01953L12.0166 7.18652C12.0539 7.38403 12.1499 7.56588 12.292 7.70801C12.4341 7.85013 12.616 7.94609 12.8135 7.9834L16.9805 8.77148H16.9795C17.2662 8.82503 17.5256 8.97683 17.7119 9.20117C17.8983 9.42555 18 9.70834 18 10ZM17.8271 4.0791C17.8271 4.22843 17.775 4.37334 17.6797 4.48828C17.5842 4.60329 17.4507 4.68056 17.3037 4.70801L17.3047 4.70898L16.6699 4.82812L16.5498 5.46191C16.5224 5.60887 16.4451 5.74238 16.3301 5.83789C16.2151 5.93334 16.0703 5.98532 15.9209 5.98535C15.7715 5.98535 15.6267 5.93328 15.5117 5.83789C15.3971 5.74266 15.3187 5.6103 15.291 5.46387L15.1709 4.82812L14.5361 4.70898V4.70801C14.3898 4.68032 14.2573 4.6029 14.1621 4.48828C14.0907 4.40218 14.0436 4.29937 14.0244 4.19043L14.0146 4.0791L14.0244 3.96875C14.0436 3.85949 14.0904 3.75624 14.1621 3.66992C14.2576 3.55499 14.3903 3.47672 14.5371 3.44922L15.1709 3.3291L15.291 2.69531C15.3186 2.54862 15.3969 2.41569 15.5117 2.32031L15.6025 2.25781C15.6989 2.20264 15.8086 2.17285 15.9209 2.17285L16.0312 2.18262C16.1041 2.19538 16.174 2.22111 16.2383 2.25781L16.3301 2.32031L16.4092 2.39941C16.4808 2.48388 16.5302 2.58618 16.5508 2.69629H16.5498L16.6699 3.3291L17.3027 3.44922H17.3037C17.4138 3.46978 17.5161 3.5192 17.6006 3.59082L17.6797 3.66992L17.7422 3.76172C17.7971 3.85791 17.8271 3.96706 17.8271 4.0791Z" fill="currentColor"/>
-    </svg>
-  );
-}
-
 /* ── AgentNextGenPage ── */
 
 type Page = "agent-workspace" | "agent" | "outbound" | "login";
@@ -1257,12 +1316,12 @@ export function AgentNextGenPage({
   // active one.
   const [interactions, setInteractions] = useState<ActiveInteraction[]>([]);
   const [activeInteractionId, setActiveInteractionId] = useState<string | null>(null);
-  // Set by an InteractionNavItem card's own "Add Outbound" button (see
-  // OutboundAddButton usage below) to deep-link CreateNew straight to the
-  // call-setup screen for that contact+channel — see
-  // CreateNewOutboundConfig.launchRequest's own doc comment in lyra-ui.
-  // Cleared back to null once CreateNew reports it's been handled.
-  const [outboundLaunchRequest, setOutboundLaunchRequest] = useState<{ contactId: string; channel: ChannelType } | null>(null);
+  // Drives the main content area: whenever an interaction is active, the
+  // Desk dashboard is replaced by that interaction's blank detail page (see
+  // the PageHeader "record header" mode below) — starting/quick-dialing/
+  // redialing a new assignment always sets this, so the screen switches
+  // over automatically the moment one is added.
+  const activeInteraction = interactions.find((i) => i.id === activeInteractionId) ?? null;
   // Shared clock powering every open channel's live "MM:SS since it
   // started" elapsed display — independent of `elapsedSeconds` below, which
   // is the agent's own status timer and resets on status change.
@@ -1271,7 +1330,7 @@ export function AgentNextGenPage({
     const id = setInterval(() => setClockTick((t) => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
-  const [activeDeskTab, setActiveDeskTab] = useState<"home" | "customers" | "accounts" | "tickets" | "tasks">("home");
+  const [activeDeskTab, setActiveDeskTab] = useState<"home" | "customers" | "accounts" | "tickets" | "interactions" | "wem">("home");
   const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
   const [notifications, setNotifications] = useState(INITIAL_NOTIFICATIONS);
   const [agentStatus, setAgentStatus] = useState<AgentStatus>("offline");
@@ -1302,7 +1361,7 @@ export function AgentNextGenPage({
   const [aiPanelOpen,  setAiPanelOpen]  = useState(false);
   const [aiMounted,    setAiMounted]    = useState(false);
   const [aiState,      setAiState]      = useState<PanelState>("closed");
-  const [aiVariant,    setAiVariant]    = useState<DraggableVariant>("float");
+  const [aiVariant,    setAiVariant]    = useState<DraggableVariant>("docked");
   const [aiWidth,      setAiWidth]      = useState(AI_PANEL_DEFAULT_WIDTH);
   const [aiHeight,     setAiHeight]     = useState(860);
   const [aiIsResizing, setAiIsResizing] = useState(false);
@@ -1339,6 +1398,13 @@ export function AgentNextGenPage({
   const [sidePanelResizing,  setSidePanelResizing]  = useState(false);
   const [sidePanelWidth,     setSidePanelWidth]     = useState(256);
   const [containerWidth,     setContainerWidth]     = useState(9999);
+  // Once the icon has explicitly pinned-then-closed the panel (see
+  // `handleSidePanelIconToggle`), hovering the icon again must NOT
+  // auto-reopen it — that would override a deliberate "close" decision.
+  // From that point on, only another click reopens it. Starts `true` so
+  // the very first hover (before anything has ever been pinned) still
+  // works as a preview, per the earlier "display on hover" request.
+  const [sidePanelHoverEnabled, setSidePanelHoverEnabled] = useState(true);
   const sidePanelTimer = useRef<ReturnType<typeof setTimeout>>();
 
   // Track container width to force unpinned below 768px
@@ -1354,6 +1420,40 @@ export function AgentNextGenPage({
   const isNarrowContainer = containerWidth < 768;
   // When narrow: force overlay mode and hide pin button
   const effectivePinned = isNarrowContainer ? false : sidePanelPinned;
+
+  // Close (and fully unpin) the Designer panel the moment the container
+  // drops below 768px, and make sure hover-preview is re-armed — same
+  // "reset state on narrow, don't just hide it visually" pattern as the
+  // nav/docked-panel effects below. Without this, a panel left open+pinned
+  // at a wide width stayed open (just re-skinned as an overlay by
+  // `effectivePinned` above) the instant the container narrowed, instead
+  // of actually closing — and if a prior wide-mode pin-then-close had
+  // already disabled hover (see `sidePanelHoverEnabled`), narrow mode
+  // would be left with no way to reopen it at all. Narrow mode's only
+  // opening mechanism is hover, so both must be reset together.
+  useEffect(() => {
+    if (isNarrowContainer) {
+      setSidePanelOpen(false);
+      setSidePanelPinned(false);
+      setSidePanelHoverEnabled(true);
+    }
+  }, [isNarrowContainer]);
+
+  // The Designer panel belongs to the interaction it was opened from — its
+  // only trigger is the record icon on the interaction `PageHeader`, which
+  // doesn't exist on the Desk dashboard at all. Leaving the interaction
+  // (dismissing it, or navigating to Desk/another tab) must close it the
+  // same way narrowing the container does above; otherwise a panel pinned
+  // open on one customer stays pinned open after switching to a page that
+  // has no icon to close it with. Keyed on the id (a stable primitive)
+  // rather than the `activeInteraction` object itself.
+  useEffect(() => {
+    if (!activeInteractionId) {
+      setSidePanelOpen(false);
+      setSidePanelPinned(false);
+      setSidePanelHoverEnabled(true);
+    }
+  }, [activeInteractionId]);
 
   // Track window width for nav overlay breakpoint
   useEffect(() => {
@@ -1385,15 +1485,38 @@ export function AgentNextGenPage({
   }, [isNavNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onSidePanelHoverStart = () => {
+    if (!sidePanelHoverEnabled) return;
     clearTimeout(sidePanelTimer.current);
     setSidePanelOpen(true);
   };
+  // Guarded on `sidePanelPinned`: once the icon has pinned the panel open,
+  // moving the mouse away must NOT auto-close it after the delay below —
+  // that would silently undo the pin the moment the cursor left, which
+  // defeats the entire point of pinning. Unpinned/hover-preview mode is the
+  // only case this timer should ever fire for.
   const onSidePanelHoverEnd = () => {
+    if (sidePanelPinned) return;
     sidePanelTimer.current = setTimeout(() => setSidePanelOpen(false), 300);
   };
   const handleSidePanelPinToggle = () => {
     setSidePanelPinned((v) => !v);
     setSidePanelOpen(true);
+  };
+  /* Click on the interaction record icon (see the `icon` prop on that
+     PageHeader below) — distinct from `handleSidePanelPinToggle` above
+     (the panel's own internal pin button), which always leaves the panel
+     open (just switches it between pushing layout and floating overlay).
+     This one is a real on/off toggle: click once to pin the Designer panel
+     open, click again to unpin *and* close it — "closing" is the whole
+     point of a toggle on the icon that triggered it in the first place. */
+  const handleSidePanelIconToggle = () => {
+    clearTimeout(sidePanelTimer.current);
+    const nextPinned = !sidePanelPinned;
+    setSidePanelPinned(nextPinned);
+    setSidePanelOpen(nextPinned);
+    // Closing via this toggle is a deliberate action — disable hover-preview
+    // from reopening it behind the user's back; only another click will.
+    if (!nextPinned) setSidePanelHoverEnabled(false);
   };
 
   const MAX_PANEL_HEIGHT = 860;
@@ -1436,19 +1559,43 @@ export function AgentNextGenPage({
     skillId: string;
   }) => {
     const skillLabel = OUTBOUND_CONFIG.skillOptions.find((o) => o.value === selection.skillId)?.label;
+    // `phoneOptions` only has a value→label mapping for phone numbers (raw
+    // digits → formatted display string) — email/WhatsApp addresses are
+    // already human-readable as-is (see `create-new.tsx`'s
+    // `defaultDetailValueFor`, where their `value` and `label` are the same
+    // string), so falling back to `selection.phone` itself is correct there,
+    // not a placeholder.
+    const addressLabel = OUTBOUND_CONFIG.phoneOptions.find((o) => o.value === selection.phone)?.label ?? selection.phone;
     const newChannel: TrackedChannel = {
       id: `${selection.channel}:${selection.phone}`,
       type: selection.channel,
       startTick: clockTick,
       preview: skillLabel,
       value: selection.phone,
+      addressLabel,
+      // A freshly started outbound conversation hasn't exchanged any
+      // messages yet — `0` (not omitted) so the tooltip actually reads "0
+      // Messages" instead of showing nothing. Voice has no message concept
+      // at all, so it's left `undefined` there — see
+      // `ChannelTabProps.messageCount`'s own doc comment.
+      messageCount: selection.channel === "voice" ? undefined : 0,
+      interactionId: generateInteractionId(),
     };
 
     setInteractions((prev) => {
       const idx = prev.findIndex((i) => i.id === selection.contact.id);
       // No existing interaction with this contact — start a new card.
       if (idx === -1) {
-        return [...prev, { id: selection.contact.id, customerName: selection.contact.name, channels: [newChannel] }];
+        return [...prev, {
+          id: selection.contact.id,
+          customerName: selection.contact.name,
+          // `subtitle` is the contact's real id (customerId/agentId/
+          // TEAM-.../SKL-.../ASN-...) whenever CreateNew's record set one —
+          // only missing for records that genuinely have none.
+          recordId: selection.contact.subtitle ?? generateCaseId(),
+          channels: [newChannel],
+          currentChannelId: newChannel.id,
+        }];
       }
       // Same contact already has an interaction open — restart the matching
       // channel's timer if this is the *same* type+address (e.g. redialing
@@ -1463,7 +1610,11 @@ export function AgentNextGenPage({
         const channels = chIdx === -1
           ? [...interaction.channels, newChannel]
           : interaction.channels.map((c, j) => (j === chIdx ? newChannel : c));
-        return { ...interaction, channels };
+        // The channel just started/restarted always takes over as current —
+        // mirrors InteractionNavItem's own auto-select-newest rule, now
+        // mirrored up here too since this state is what drives both the
+        // card (via currentChannelKey) and the new ChannelTab bar.
+        return { ...interaction, channels, currentChannelId: newChannel.id };
       });
     });
     setActiveInteractionId(selection.contact.id);
@@ -1475,11 +1626,21 @@ export function AgentNextGenPage({
     // number itself so redialing the same number restarts its card rather
     // than stacking up duplicates.
     const id = `quickdial:${phoneNumber}`;
-    const newChannel: TrackedChannel = { id: "voice", type: "voice", startTick: clockTick };
+    // Voice has no message concept at all, so `messageCount` is left
+    // undefined here (not `0`) — see `ChannelTabProps.messageCount`'s own
+    // doc comment for why that's a deliberate omission, not an oversight.
+    const newChannel: TrackedChannel = {
+      id: "voice",
+      type: "voice",
+      startTick: clockTick,
+      value: phoneNumber,
+      addressLabel: phoneNumber,
+      interactionId: generateInteractionId(),
+    };
     setInteractions((prev) => {
       const idx = prev.findIndex((i) => i.id === id);
-      if (idx === -1) return [...prev, { id, channels: [newChannel] }];
-      return prev.map((interaction, i) => (i === idx ? { ...interaction, channels: [newChannel] } : interaction));
+      if (idx === -1) return [...prev, { id, recordId: generateCaseId(), channels: [newChannel], currentChannelId: newChannel.id }];
+      return prev.map((interaction, i) => (i === idx ? { ...interaction, channels: [newChannel], currentChannelId: newChannel.id } : interaction));
     });
     setActiveInteractionId(id);
     setNavOpen(true);
@@ -1495,11 +1656,19 @@ export function AgentNextGenPage({
      reasoning as handleStartCall/handleQuickDial above. */
   const handleRedial = (entry: ContactHistoryEntry) => {
     const id = `redial:${entry.id}`;
-    const newChannel: TrackedChannel = { id: "voice", type: "voice", startTick: clockTick };
+    // No stored phone number on ContactHistoryEntry — this channel's
+    // ChannelTab just shows icon + "Voice" with no address, same as any
+    // other channel with no addressLabel.
+    const newChannel: TrackedChannel = {
+      id: "voice",
+      type: "voice",
+      startTick: clockTick,
+      interactionId: generateInteractionId(),
+    };
     setInteractions((prev) => {
       const idx = prev.findIndex((i) => i.id === id);
-      if (idx === -1) return [...prev, { id, customerName: entry.name, channels: [newChannel] }];
-      return prev.map((interaction, i) => (i === idx ? { ...interaction, channels: [newChannel] } : interaction));
+      if (idx === -1) return [...prev, { id, customerName: entry.name, recordId: entry.caseId, channels: [newChannel], currentChannelId: newChannel.id }];
+      return prev.map((interaction, i) => (i === idx ? { ...interaction, channels: [newChannel], currentChannelId: newChannel.id } : interaction));
     });
     setActiveInteractionId(id);
     setNavOpen(true);
@@ -1514,13 +1683,15 @@ export function AgentNextGenPage({
      the side panel/content area doesn't keep pointing at a card that no
      longer exists. `onDismissChannel` (only called when more than one
      channel was open) drops just that one channel, leaving the rest of the
-     card and its other channels open. */
+     card and its other channels open. The `ChannelTab` bar's own kebab wires
+     to the same two handlers (see the `activeInteraction` block below), so
+     dismissing from a tab behaves identically to dismissing from the card. */
   const handleDismissInteraction = (id: string) => {
     setInteractions((prev) => prev.filter((interaction) => interaction.id !== id));
     setActiveInteractionId((current) => (current === id ? null : current));
   };
 
-  const handleDismissChannel = (id: string, channel: InteractionChannel) => {
+  const handleDismissChannel = (id: string, channel: Pick<InteractionChannel, "id" | "type">) => {
     // Match on `id` (falling back to `type`, same as InteractionNavItem's
     // own `channelKey` convention) rather than `type` alone — two open
     // channels can share a `type` (e.g. two SMS threads on different
@@ -1528,10 +1699,28 @@ export function AgentNextGenPage({
     // the one the agent actually dismissed.
     const dismissedKey = channel.id ?? channel.type;
     setInteractions((prev) =>
+      prev.map((interaction) => {
+        if (interaction.id !== id) return interaction;
+        const channels = interaction.channels.filter((c) => (c.id ?? c.type) !== dismissedKey);
+        // Dismissing the currently-selected channel needs to hand "current"
+        // to another remaining one (the new last channel, same fallback
+        // InteractionNavItem itself uses) — otherwise the card/tab bar would
+        // keep pointing at a channel that no longer exists.
+        const currentChannelId = interaction.currentChannelId === dismissedKey
+          ? channels[channels.length - 1]?.id
+          : interaction.currentChannelId;
+        return { ...interaction, channels, currentChannelId };
+      })
+    );
+  };
+
+  /** Fired by a card row's `onCurrentChannelChange` or a `ChannelTab`'s
+   *  `onClick` — both point at this same setter so either one updates the
+   *  other (see `ActiveInteraction.currentChannelId`'s own doc comment). */
+  const handleChannelSelect = (interactionId: string, channelKey: string) => {
+    setInteractions((prev) =>
       prev.map((interaction) =>
-        interaction.id === id
-          ? { ...interaction, channels: interaction.channels.filter((c) => (c.id ?? c.type) !== dismissedKey) }
-          : interaction
+        interaction.id === interactionId ? { ...interaction, currentChannelId: channelKey } : interaction
       )
     );
   };
@@ -1586,18 +1775,17 @@ export function AgentNextGenPage({
     };
   }, [interactions]);
 
-  // Every outbound contact (agent/team/skill/customer), keyed by id — used
-  // to look up which channels a *live interaction*'s underlying contact
-  // actually supports, for that card's own "Add Outbound" button (see
-  // OutboundAddButton usage below). `ActiveInteraction.id` is always a
-  // contact's id for interactions started via CreateNew (see
-  // handleStartCall) — the `quickdial:`/`redial:` prefixed ids have no
-  // matching contact record, which the lookup's `undefined` return already
-  // handles (falls back to every channel type, see the render below).
-  const outboundContactsById = useMemo(
-    () => new Map(outboundConfig.groups.flatMap((g) => g.contacts ?? []).map((c) => [c.id, c])),
-    [outboundConfig]
-  );
+  // Every "Agent Next Gen" consumer (this app, AgentNextGenTemplate.
+  // stories.tsx, LeftNav.stories.tsx's "Agent Next Gen Left Nav" story)
+  // wants the exact same "+" behavior on each InteractionNavItem card —
+  // look up that interaction's underlying outbound contact, scope the
+  // flyout to whatever channels it actually supports (falling back to the
+  // full unfiltered list for quick-dialed/redialed numbers with no matching
+  // contact record), and deep-link a picked channel into CreateNew's
+  // `launchRequest`. That's `useOutboundAddButton` (lyra-ui) — a single
+  // shared implementation instead of three hand-copied ones that could
+  // (and did) quietly drift out of sync.
+  const { launchRequest: outboundLaunchRequest, onLaunchRequestHandled, getHeaderAction } = useOutboundAddButton(outboundConfig);
 
   /* Welcome modal — shown once on page load; "Go Available" flips the agent
      to Available, "Start Offline" keeps them Offline (the default state). */
@@ -1782,6 +1970,21 @@ export function AgentNextGenPage({
     />
   ) : null;
 
+  // Shared "Ask AI" PageHeader action — same button, same `aiPanelOpen`
+  // toggle, whether the header is showing the Desk dashboard or an active
+  // interaction's record page.
+  const askAiButton = (
+    <Button
+      variant="outline"
+      onClick={() => setAiPanelOpen((v) => !v)}
+      aria-expanded={aiPanelOpen}
+      className={aiPanelOpen ? "bg-lyra-state-hover" : undefined}
+    >
+      <AiIcon className="h-4 w-4" />
+      Ask AI
+    </Button>
+  );
+
   return (
     <div className="flex flex-col h-screen bg-lyra-bg-surface-shell overflow-hidden animate-in fade-in-0 duration-500">
 
@@ -1816,23 +2019,26 @@ export function AgentNextGenPage({
         }
         actions={
           <>
+            {/* Help sits directly left of Notifications — matches every
+                other AppHeader usage in this app/codebase (Header.tsx,
+                AppHeader.stories.tsx) that has a Help icon at all. Settings
+                moved out of this row entirely — see `buildNavItems` above,
+                it's now the LeftNav rail item below Desk instead. Opens the
+                CXone Agent help docs in a new tab — "noopener,noreferrer" so
+                that tab can't reach back into this app via `window.opener`. */}
+            <ActionIconButton
+              size="xl"
+              title="Help"
+              onClick={() => window.open("https://help.nicecxone.com/content/agent/cxoneagent/cxoneagent.htm?cshid=CXoneAgent", "_blank", "noopener,noreferrer")}
+            >
+              <CircleHelp className="h-5 w-5" strokeWidth={1.5} />
+            </ActionIconButton>
             <NotificationsBell
               notifications={notifications}
               open={notifOpen}
               onOpenChange={setNotifOpen}
               renderPanel={false}
             />
-            <Tooltip content="Ask AI" placement="bottom" asLabel>
-              <button
-                type="button"
-                aria-label="Ask AI"
-                aria-expanded={aiPanelOpen}
-                onClick={() => setAiPanelOpen((v) => !v)}
-                className={`relative flex h-10 w-10 items-center justify-center rounded-lyra-lg text-lyra-fg-default transition-colors hover:bg-lyra-state-hover active:bg-lyra-state-pressed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus ${aiPanelOpen ? "bg-lyra-state-hover" : ""}`}
-              >
-                <AiSparkleIcon />
-              </button>
-            </Tooltip>
             <AgentProfile
               name="John Smith"
               initials="JS"
@@ -1853,23 +2059,25 @@ export function AgentNextGenPage({
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
         <LeftNav
-          items={NAV_ITEMS}
+          items={buildNavItems(Boolean(activeInteraction), () => setActiveInteractionId(null))}
           open={navOpen}
           onToggle={() => setNavOpen((v) => !v)}
           overlay={isNavNarrow}
+          pinnedHeader={
+            <CreateNew
+              title="New Outbound"
+              outbound={{
+                ...outboundConfig,
+                onStartCall: handleStartCall,
+                onQuickDial: handleQuickDial,
+                launchRequest: outboundLaunchRequest,
+                onLaunchRequestHandled,
+              }}
+              expanded={navOpen}
+            />
+          }
           header={
             <>
-              <CreateNew
-                title="New Outbound"
-                outbound={{
-                  ...outboundConfig,
-                  onStartCall: handleStartCall,
-                  onQuickDial: handleQuickDial,
-                  launchRequest: outboundLaunchRequest,
-                  onLaunchRequestHandled: () => setOutboundLaunchRequest(null),
-                }}
-                expanded={navOpen}
-              />
               {/* No cards until the agent actually starts one above — each
                   card is one contact (or quick-dialed number), with every
                   channel they're being reached on folded into that same
@@ -1878,12 +2086,13 @@ export function AgentNextGenPage({
                   handleStartCall's merge-by-type+address logic). */}
               {interactions.map((interaction) => {
                 const mostRecentId = interaction.channels[interaction.channels.length - 1]?.id;
+                const currentId = interaction.currentChannelId ?? mostRecentId;
                 const channels: InteractionChannel[] = interaction.channels.map((c) => ({
                   id: c.id,
                   type: c.type,
                   elapsed: formatElapsedTime(clockTick - c.startTick),
                   preview: c.preview,
-                  current: c.id === mostRecentId,
+                  current: c.id === currentId,
                   // Read straight off the tracked channel (see
                   // TrackedChannel.awaitingResponse's own doc comment) —
                   // not derived from `type` — so a freshly-started outbound
@@ -1892,16 +2101,6 @@ export function AgentNextGenPage({
                   awaitingResponse: c.awaitingResponse ?? false,
                 }));
                 const earliestStart = Math.min(...interaction.channels.map((c) => c.startTick));
-                // Quick-dialed/redialed interactions (id prefixed
-                // "quickdial:"/"redial:") have no backing Agent/Customer/
-                // Team/Skill contact record to look up real per-contact
-                // channel support from — offer the full unfiltered channel
-                // list for those so the "+" still appears on every card's
-                // header (see `headerAction` below).
-                const contactRecord = outboundContactsById.get(interaction.id);
-                const addOutboundChannelOptions = contactRecord
-                  ? OUTBOUND_CONFIG.channelOptions.filter((c) => contactRecord.channels.includes(c.id))
-                  : OUTBOUND_CONFIG.channelOptions;
                 return (
                   <InteractionNavItem
                     key={interaction.id}
@@ -1914,12 +2113,12 @@ export function AgentNextGenPage({
                     channels={channels}
                     onDismiss={() => handleDismissInteraction(interaction.id)}
                     onDismissChannel={(channel) => handleDismissChannel(interaction.id, channel)}
-                    headerAction={
-                      <OutboundAddButton
-                        channelOptions={addOutboundChannelOptions}
-                        onSelect={(channel) => setOutboundLaunchRequest({ contactId: interaction.id, channel })}
-                      />
-                    }
+                    headerAction={getHeaderAction(interaction.id)}
+                    // Kept in sync with the ChannelTab bar under this
+                    // interaction's record-header PageHeader — see
+                    // ActiveInteraction.currentChannelId's own doc comment.
+                    currentChannelKey={currentId}
+                    onCurrentChannelChange={(key) => handleChannelSelect(interaction.id, key)}
                   />
                 );
               })}
@@ -1935,44 +2134,167 @@ export function AgentNextGenPage({
               relative so unpinned Panel can overlay the full surface. */}
           <Container className="flex flex-1 overflow-hidden relative">
 
-            {/* Pinned Panel — flex sibling, pushes everything (incl. PageHeader) to the right */}
-            {showPanelToggle && effectivePinned && (
+            {/* Designer Panel — one instance whose `pinned` prop just flips
+                Panel's own internal inline-vs-overlay branch, the same way
+                Panel.stories.tsx's "Side Panel" story toggles `pinned`/`open`
+                on a single element. This used to be two separately-gated
+                `<Panel>` elements (one per branch, below) — flipping
+                `effectivePinned` unmounted one and mounted the other, so the
+                very click meant to animate the panel open instead made it
+                jump straight to its resting width (a fresh mount has no
+                prior width to transition from). One element, prop-driven,
+                animates correctly either way — matching the story.
+                Gated on `activeInteraction`, not just `showPanelToggle` —
+                its only trigger is the record icon on the interaction
+                `PageHeader` below, which doesn't exist on the Desk
+                dashboard. Without this it stayed mounted (and, if pinned,
+                stayed open) after navigating away from the interaction that
+                opened it, since nothing else about `showPanelToggle` varies
+                by page. The `activeInteraction`-clearing effect above
+                already closes/unpins it going into that transition, so
+                unmounting here doesn't lose any pinned/open state that
+                needed to persist. */}
+            {showPanelToggle && activeInteraction && (
               <Panel
                 variant="side"
                 side="left"
                 open={sidePanelOpen}
-                pinned
+                pinned={effectivePinned}
                 headerTitle="Designer"
-                onPinToggle={handleSidePanelPinToggle}
+                onPinToggle={isNarrowContainer ? undefined : handleSidePanelPinToggle}
                 width={sidePanelWidth}
                 onWidthChange={setSidePanelWidth}
+                onResizeStateChange={setSidePanelResizing}
+                onMouseEnter={onSidePanelHoverStart}
+                onMouseLeave={sidePanelResizing ? undefined : onSidePanelHoverEnd}
               />
             )}
 
             {/* Content column: PageHeader + page body */}
             <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
-              {showPageHeader && (
-                <PageHeader title="Desk" />
-              )}
-              {showPageHeader && (
-                <TabList className="px-6 bg-lyra-bg-surface-base shrink-0">
-                  <Tab active={activeDeskTab === "home"} onClick={() => setActiveDeskTab("home")}>
-                    Dashboard
-                  </Tab>
-                  <Tab active={activeDeskTab === "customers"} onClick={() => setActiveDeskTab("customers")}>
-                    Customers
-                  </Tab>
-                  <Tab active={activeDeskTab === "accounts"} onClick={() => setActiveDeskTab("accounts")}>
-                    Accounts
-                  </Tab>
-                  <Tab active={activeDeskTab === "tickets"} onClick={() => setActiveDeskTab("tickets")}>
-                    Tickets
-                  </Tab>
-                  <Tab active={activeDeskTab === "tasks"} onClick={() => setActiveDeskTab("tasks")}>
-                    Tasks
-                  </Tab>
-                </TabList>
-              )}
+              {activeInteraction ? (
+                // ── Active interaction's detail page — replaces the Desk
+                // dashboard the moment a new assignment is started/quick-
+                // dialed/redialed (see `activeInteraction` above). Just the
+                // record header for now; the blank body below is where a
+                // real case/contact detail view will go. Reverts back to
+                // the dashboard automatically once the interaction is
+                // dismissed (`activeInteractionId` clears).
+                <>
+                  {showPageHeader && (
+                    <PageHeader
+                      // Hovering this record icon reveals the Designer side
+                      // panel (the unpinned-overlay `Panel` below, via the
+                      // same `onSidePanelHoverStart`/`onSidePanelHoverEnd`
+                      // pair that Panel's own onMouseEnter/onMouseLeave
+                      // already use to stay open while the cursor moves from
+                      // here onto it). Clicking it is a real on/off toggle —
+                      // `handleSidePanelIconToggle` — pins it open on the
+                      // first click, and unpins *and closes* it on the next
+                      // (distinct from the panel's own internal pin button,
+                      // `handleSidePanelPinToggle`, which always leaves it
+                      // open). Scoped to this interaction PageHeader only —
+                      // the Desk dashboard's PageHeader (no `icon` prop) is
+                      // untouched, so this doesn't change anything there.
+                      //
+                      // The button itself is `PanelPinButton` — the exact
+                      // same trigger `Panel`'s own internal pin button uses
+                      // (Tooltip, focus ring, and the icon-rotates-45°-when-
+                      // pinned animation), just with its `icon` swapped from
+                      // `Pin` to `User` — composed, not re-implemented, per
+                      // lyra-ui's "composition over reimplementation" rule.
+                      // `iconAriaHidden={false}` because this slot is no
+                      // longer decorative — PageHeader's default aria-hidden
+                      // wrapper would otherwise hide a real, labeled button
+                      // from assistive tech.
+                      icon={
+                        <span
+                          onMouseEnter={onSidePanelHoverStart}
+                          onMouseLeave={sidePanelResizing ? undefined : onSidePanelHoverEnd}
+                        >
+                          <PanelPinButton
+                            pinned={sidePanelPinned}
+                            onToggle={handleSidePanelIconToggle}
+                            icon={<User className="h-4 w-4" strokeWidth={1.5} aria-hidden="true" />}
+                            pinnedLabel="Unpin Designer panel"
+                            unpinnedLabel="Pin Designer panel"
+                          />
+                        </span>
+                      }
+                      iconAriaHidden={false}
+                      title={activeInteraction.customerName ?? "Customer"}
+                      subtitle={activeInteraction.recordId}
+                      actions={askAiButton}
+                    />
+                  )}
+                  {/* One tab per open channel — kept in sync with the same
+                      interaction's InteractionNavItem card via
+                      currentChannelId/handleChannelSelect (see that field's
+                      own doc comment). Shown even with just one channel open
+                      — the tab still surfaces that channel's kebab actions
+                      (Unassign & Dismiss/Consult/Transfer/etc.), not just a
+                      way to switch between multiple. */}
+                  {showPageHeader && activeInteraction.channels.length > 0 && (
+                    <TabList className="px-6 bg-lyra-bg-surface-base shrink-0 lyra-channel-tab-list-wrap">
+                      {activeInteraction.channels.map((c) => {
+                        const key = c.id ?? c.type;
+                        return (
+                          <ChannelTab
+                            key={key}
+                            type={c.type}
+                            address={c.addressLabel}
+                            messageCount={c.messageCount}
+                            interactionId={c.interactionId}
+                            active={(activeInteraction.currentChannelId ?? activeInteraction.channels[activeInteraction.channels.length - 1]?.id) === key}
+                            onClick={() => handleChannelSelect(activeInteraction.id, key)}
+                            onDismiss={() => {
+                              if (activeInteraction.channels.length > 1) handleDismissChannel(activeInteraction.id, c);
+                              else handleDismissInteraction(activeInteraction.id);
+                            }}
+                          />
+                        );
+                      })}
+                    </TabList>
+                  )}
+                  <div className="flex-1 overflow-y-auto" />
+                </>
+              ) : (
+                <>
+                  {showPageHeader && (
+                    <PageHeader
+                      title="Desk"
+                      // Sole "Ask AI" entry point — the earlier icon-only
+                      // AppHeader trigger was removed since this labeled
+                      // PageHeader button covers the same `aiPanelOpen`/
+                      // `AiPanel` instance. Icon: lyra-ui's own
+                      // PageHeader.stories.tsx already demonstrates this exact
+                      // "Ask AI" action button using its colored `AiIcon` —
+                      // reused here verbatim.
+                      actions={askAiButton}
+                    />
+                  )}
+                  {showPageHeader && (
+                    <TabList className="px-6 bg-lyra-bg-surface-base shrink-0">
+                      <Tab active={activeDeskTab === "home"} onClick={() => setActiveDeskTab("home")}>
+                        Dashboard
+                      </Tab>
+                      <Tab active={activeDeskTab === "customers"} onClick={() => setActiveDeskTab("customers")}>
+                        Customers
+                      </Tab>
+                      <Tab active={activeDeskTab === "accounts"} onClick={() => setActiveDeskTab("accounts")}>
+                        Accounts
+                      </Tab>
+                      <Tab active={activeDeskTab === "tickets"} onClick={() => setActiveDeskTab("tickets")}>
+                        Tickets
+                      </Tab>
+                      <Tab active={activeDeskTab === "interactions"} onClick={() => setActiveDeskTab("interactions")}>
+                        Interactions
+                      </Tab>
+                      <Tab active={activeDeskTab === "wem"} onClick={() => setActiveDeskTab("wem")}>
+                        WEM
+                      </Tab>
+                    </TabList>
+                  )}
               {/* Body row: main content + interior panel */}
               <div className="relative flex flex-1 overflow-hidden">
                 <div className="flex flex-1 flex-col min-w-0 overflow-y-auto px-6 py-6">
@@ -2113,24 +2435,10 @@ export function AgentNextGenPage({
                   </Panel>
                 )}
               </div>
+                </>
+              )}
             </div>
 
-            {/* Unpinned Panel — absolute overlay covering full Container incl. PageHeader */}
-            {showPanelToggle && !effectivePinned && (
-              <Panel
-                variant="side"
-                side="left"
-                open={sidePanelOpen}
-                pinned={false}
-                headerTitle="Designer"
-                onPinToggle={isNarrowContainer ? undefined : handleSidePanelPinToggle}
-                width={sidePanelWidth}
-                onWidthChange={setSidePanelWidth}
-                onResizeStateChange={setSidePanelResizing}
-                onMouseEnter={onSidePanelHoverStart}
-                onMouseLeave={sidePanelResizing ? undefined : onSidePanelHoverEnd}
-              />
-            )}
           </Container>
 
           {/* Notifications — float (CSS transitions, not keyframe animations — avoids compositor fill-mode flash) */}
