@@ -3,6 +3,10 @@ import react from "@vitejs/plugin-react";
 import path from "path";
 
 export default defineConfig({
+  // GitHub Pages project site — served at
+  // https://davidbauerjr991.github.io/agent-next-gen-v1/, a subpath, not
+  // the domain root — so built asset URLs need this prefix or they 404.
+  base: "/agent-next-gen-v1/",
   plugins: [react()],
   resolve: {
     alias: {

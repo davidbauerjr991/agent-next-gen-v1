@@ -13,7 +13,7 @@ import {
   AgentNotifications,
   AgentProfile,
   Container,
-  Panel,
+  InteriorPanel,
   CustomerInformationPanel,
   PanelPinButton,
   PageHeader,
@@ -352,6 +352,17 @@ function formatElapsedTime(totalSeconds: number): string {
   return `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 }
 
+/** Same idea as `formatElapsedTime` above but "HH:MM:SS", for the home tab's
+ *  queue widgets — their wait time can run past an hour (e.g. voicemail),
+ *  unlike a just-started interaction's MM:SS elapsed display. */
+function formatWaitTime(totalSeconds: number): string {
+  const clamped = Math.max(0, totalSeconds);
+  const hh = Math.floor(clamped / 3600);
+  const mm = Math.floor((clamped % 3600) / 60);
+  const ss = clamped % 60;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+}
+
 /* ── Left nav items ──
    Built from whether an interaction is currently active (see
    `activeInteraction` below) rather than a static array, so "Home" (the
@@ -426,6 +437,8 @@ interface LatestContact {
   contactsCount: number;
   /** Drives the "Skills" metric at the end of the row. */
   skillsCount: number;
+  /** "Agents" metric on the home tab's queue widget — a static per-queue headcount (not derived from `QueueSubItem`, which has no single "assigned agents" total of its own to stay in sync with). */
+  agentsCount: number;
   channel: string;
   wait: string;
   caseId: string;
@@ -534,9 +547,15 @@ function buildInteractions(seed: number, contactStatus: "open" | "closed", count
    colors, same left-to-right order, just rendered as compact circular
    `Icon` badges here instead of a donut or bar.
 
-   Defined before `LATEST_CONTACTS` (rather than after, as it originally
+   `INITIAL_QUEUE_SUB_ITEMS` is only the *seed* — the component below holds
+   the live copy in `queueSubItems` state (see "Live queue simulation" near
+   the component's other state) so the home tab's Contacts metric can
+   visibly fluctuate over time while staying derived from this same list
+   (see `sumInQueue` below), not an independently-randomized number.
+
+   Defined before the queue-widget row (rather than after, as it originally
    was) so each queue widget's `skillsCount` can be derived from this
-   list's own length — see the comment on `LATEST_CONTACTS` below. */
+   list's own length — see the comment on `LATEST_CONTACTS_STATIC` below. */
 interface QueueSubItem {
   id: string;
   label: string;
@@ -548,7 +567,7 @@ interface QueueSubItem {
   unavailable: number;
 }
 
-const QUEUE_SUB_ITEMS: Record<string, QueueSubItem[]> = {
+const INITIAL_QUEUE_SUB_ITEMS: Record<string, QueueSubItem[]> = {
   "1": [
     { id: "d1", label: "UX Chat",         icon: MessageSquare, inQueueCount: 2, wait: "3m 5s", available: 3, working: 1, unavailable: 0 },
     { id: "d2", label: "UX Email",        icon: Mail,          inQueueCount: 2, wait: "3m 5s", available: 3, working: 1, unavailable: 0 },
@@ -574,23 +593,46 @@ const QUEUE_SUB_ITEMS: Record<string, QueueSubItem[]> = {
   ],
 };
 
-/* Contact-in-queue counts for each queue widget — NOT randomized (that was
-   the bug: an earlier version generated these with `randomContactsCount()`,
-   a plausible-looking number with no connection to the actual queue data,
-   so the metric card's "Contacts" count and the side panel's own "In Queue"
-   figures for the same queue could — and did — disagree, e.g. "2 Contacts"
-   on a queue whose sub-items summed to 5). Fixed the same way `skillsCount`
-   already worked: derived directly from `QUEUE_SUB_ITEMS[id]`, the same
-   list the side panel renders, so the two can never drift apart. */
-function sumInQueue(id: string): number {
-  return QUEUE_SUB_ITEMS[id].reduce((total, item) => total + item.inQueueCount, 0);
+/* Contact-in-queue counts for each queue widget — NOT independently
+   randomized (that was the bug: an earlier version generated these with
+   `randomContactsCount()`, a plausible-looking number with no connection to
+   the actual queue data, so the metric card's "Contacts" count and the side
+   panel's own "In Queue" figures for the same queue could — and did —
+   disagree, e.g. "2 Contacts" on a queue whose sub-items summed to 5).
+   Fixed the same way `skillsCount` already worked, and still true now that
+   the source list is React state instead of a module constant: derived
+   directly from a `QueueSubItem[]`, the same list the side panel renders,
+   so the two can never drift apart — including while the live simulation
+   below is nudging that list's counts up and down. */
+function sumInQueue(items: QueueSubItem[]): number {
+  return items.reduce((total, item) => total + item.inQueueCount, 0);
 }
 
-const LATEST_CONTACTS: LatestContact[] = [
-  { id: "1", name: "Digital",       icon: MessageSquare, status: "open",   contactsCount: sumInQueue("1"), skillsCount: QUEUE_SUB_ITEMS["1"].length, channel: "Atlas", wait: "1m",  caseId: "CST-21009", interactions: buildInteractions(1, "open", 3) },
-  { id: "2", name: "Inbound Voice", icon: PhoneIncoming, status: "open",   contactsCount: sumInQueue("2"), skillsCount: QUEUE_SUB_ITEMS["2"].length, channel: "Atlas", wait: "3m",  caseId: "CST-21016", interactions: buildInteractions(2, "open", 5) },
-  { id: "3", name: "Voicemail",     icon: Voicemail,     status: "closed", contactsCount: sumInQueue("3"), skillsCount: QUEUE_SUB_ITEMS["3"].length, channel: "Atlas", wait: "2m",  caseId: "CST-21028", interactions: buildInteractions(3, "closed", 1) },
-  { id: "4", name: "Work Item",     icon: ClipboardList, status: "open",   contactsCount: sumInQueue("4"), skillsCount: QUEUE_SUB_ITEMS["4"].length, channel: "Emily", wait: "3m",  caseId: "CST-15001", interactions: buildInteractions(4, "open", 7) },
+/** Static per-queue "Agents" metric for the home tab's queue widgets — a
+ *  headcount `QueueSubItem` has no single equivalent of (its own
+ *  available/working/unavailable are per-channel, not a queue-wide total),
+ *  so unlike `contactsCount`/`skillsCount` this one has no underlying list
+ *  to derive from and is just seeded to match the reference screenshot. */
+const AGENTS_COUNT_BY_QUEUE: Record<string, number> = { "1": 3, "2": 2, "3": 3, "4": 11 };
+
+/** Baseline queue-wait seconds (matches the reference screenshot's
+ *  00:02:34 / 00:00:00 / 00:02:00 / 00:00:24) — the component below adds
+ *  the shared `clockTick` counter to these every render so the home tab's
+ *  "Wait Time" ticks up in real time like a live clock, the same
+ *  convention `formatElapsedTime`'s callers already use for interaction
+ *  elapsed-time displays. */
+const QUEUE_WAIT_BASE_SECONDS: Record<string, number> = { "1": 154, "2": 0, "3": 120, "4": 24 };
+
+/* Everything about each queue widget that never changes on its own — kept
+   separate from the derived/ticking fields (`contactsCount`, `skillsCount`,
+   `agentsCount`, `wait`) so those can be recomputed each render (see the
+   `latestContacts` useMemo inside the component) without re-running
+   `buildInteractions` every tick. */
+const LATEST_CONTACTS_STATIC: Omit<LatestContact, "contactsCount" | "skillsCount" | "agentsCount" | "wait">[] = [
+  { id: "1", name: "Digital",       icon: MessageSquare, status: "open",   channel: "Atlas", caseId: "CST-21009", interactions: buildInteractions(1, "open", 3) },
+  { id: "2", name: "Inbound Voice", icon: PhoneIncoming, status: "open",   channel: "Atlas", caseId: "CST-21016", interactions: buildInteractions(2, "open", 5) },
+  { id: "3", name: "Voicemail",     icon: Voicemail,     status: "closed", channel: "Atlas", caseId: "CST-21028", interactions: buildInteractions(3, "closed", 1) },
+  { id: "4", name: "Work Item",     icon: ClipboardList, status: "open",   channel: "Emily", caseId: "CST-15001", interactions: buildInteractions(4, "open", 7) },
 ];
 
 /* ── Home screen summary cards ── */
@@ -598,15 +640,18 @@ const LATEST_CONTACTS: LatestContact[] = [
 type DateFilterValue = "today" | "yesterday" | "last7" | "custom";
 
 /* Dummy Performance data per date range — drives the Performance summary
-   card's rows/footer so the numbers actually change when a range is picked. */
+   card's rows/footer so the numbers actually change when a range is picked.
+   `overallPerformance` is a percentage (replaces the old "CSAT Score"
+   0-5 rating), stored pre-formatted with the "%" like every other range
+   here does with its own unit. */
 const PERFORMANCE_DATA_BY_RANGE: Record<
   DateFilterValue,
-  { casesResolved: string; csat: string; handleTime: string; improvement: string }
+  { casesResolved: string; overallPerformance: string; handleTime: string; improvement: string }
 > = {
-  today:     { casesResolved: "12",  csat: "4.8", handleTime: "8m 32s", improvement: "15% improvement" },
-  yesterday: { casesResolved: "19",  csat: "4.6", handleTime: "9m 05s", improvement: "8% improvement" },
-  last7:     { casesResolved: "104", csat: "4.7", handleTime: "8m 50s", improvement: "11% improvement" },
-  custom:    { casesResolved: "—",   csat: "—",   handleTime: "—",      improvement: "Select a range" },
+  today:     { casesResolved: "12",  overallPerformance: "96%", handleTime: "8m 32s", improvement: "15% improvement" },
+  yesterday: { casesResolved: "19",  overallPerformance: "92%", handleTime: "9m 05s", improvement: "8% improvement" },
+  last7:     { casesResolved: "104", overallPerformance: "94%", handleTime: "8m 50s", improvement: "11% improvement" },
+  custom:    { casesResolved: "—",   overallPerformance: "—",   handleTime: "—",      improvement: "Select a range" },
 };
 
 /* Channel Type breakdown (Performance card) — Inbound/Outbound call counts,
@@ -897,8 +942,8 @@ function PerformanceBreakdownCard() {
 
 /* Performance summary card — mirrors PerformanceBreakdownCard's pattern:
    owns its own date filter state and looks up dummy data per range so the
-   Cases Resolved / CSAT numbers — and the Channel Type breakdown below
-   them — change when a range is picked. */
+   Assignments Resolved / Overall Performance numbers — and the Channel Type
+   breakdown below them — change when a range is picked. */
 function PerformanceSummaryCard() {
   const [dateFilter, setDateFilter] = useState<DateFilterValue>("today");
   const data = PERFORMANCE_DATA_BY_RANGE[dateFilter];
@@ -915,12 +960,12 @@ function PerformanceSummaryCard() {
     >
       <div className="flex flex-col gap-3 px-4 pb-4">
         <div className="flex items-center justify-between">
-          <span className="lyra-body-md text-lyra-fg-secondary">Cases Resolved</span>
+          <span className="lyra-body-md text-lyra-fg-secondary">Assignments Resolved</span>
           <span className="lyra-heading-sm text-lyra-fg-default">{data.casesResolved}</span>
         </div>
         <div className="flex items-center justify-between">
-          <span className="lyra-body-md text-lyra-fg-secondary">CSAT Score</span>
-          <span className="lyra-heading-sm text-lyra-status-success-strong">{data.csat}</span>
+          <span className="lyra-body-md text-lyra-fg-secondary">Overall Performance</span>
+          <span className="lyra-heading-sm text-lyra-status-success-strong">{data.overallPerformance}</span>
         </div>
         <Divider />
 
@@ -1516,6 +1561,61 @@ export function AgentNextGenPage({
      interior panel slot as Case Details, swapping its content instead of
      stacking a second right-docked panel. */
   const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null);
+
+  /* ── Live queue simulation ──
+     The home tab's queue widgets should look "live" — wait time ticks up
+     like a real clock, and Contacts fluctuates a bit over time — without
+     reintroducing the old `randomContactsCount()` bug (an independently-
+     randomized number that could disagree with the side panel's own
+     breakdown, see the comment on `sumInQueue` above). So the *only* thing
+     that gets randomized here is `queueSubItems` itself — the same list
+     the side panel renders and `sumInQueue` totals for the Contacts metric
+     — every few seconds one random sub-item's `inQueueCount` nudges by
+     -1/0/+1 (clamped to [0, 20]). Both the widget's Contacts number and the
+     side panel's "In Queue" figures re-derive from this one state update,
+     so they can't drift apart. Wait time uses the shared `clockTick`
+     (declared above) instead of its own timer — same "count seconds since
+     mount" convention `formatElapsedTime`'s callers already use — added to
+     each queue's `QUEUE_WAIT_BASE_SECONDS` baseline every render. */
+  const [queueSubItems, setQueueSubItems] = useState<Record<string, QueueSubItem[]>>(INITIAL_QUEUE_SUB_ITEMS);
+  useEffect(() => {
+    const id = setInterval(() => {
+      setQueueSubItems((prev) => {
+        const queueIds = Object.keys(prev);
+        const queueId = queueIds[Math.floor(Math.random() * queueIds.length)];
+        const items = prev[queueId];
+        const itemIndex = Math.floor(Math.random() * items.length);
+        const delta = Math.floor(Math.random() * 3) - 1; // -1, 0, or 1
+        const nextCount = Math.max(0, Math.min(20, items[itemIndex].inQueueCount + delta));
+        if (nextCount === items[itemIndex].inQueueCount) return prev;
+        return {
+          ...prev,
+          [queueId]: items.map((item, i) => (i === itemIndex ? { ...item, inQueueCount: nextCount } : item)),
+        };
+      });
+    }, 4000);
+    return () => clearInterval(id);
+  }, []);
+
+  /* Home tab's queue widget row — `LATEST_CONTACTS_STATIC`'s fixed fields
+     merged with the live `contactsCount`/`skillsCount` (derived from
+     `queueSubItems`) and `wait` (derived from `clockTick`) every time
+     either changes. Wait is pinned to zero once a queue actually empties
+     (matches the reference screenshot's own Inbound Voice row: 0 contacts,
+     00:00:00 wait) rather than ticking up forever regardless of whether
+     anyone's still waiting. */
+  const latestContacts = useMemo<LatestContact[]>(() => {
+    return LATEST_CONTACTS_STATIC.map((base) => {
+      const contactsCount = sumInQueue(queueSubItems[base.id]);
+      return {
+        ...base,
+        contactsCount,
+        skillsCount: queueSubItems[base.id].length,
+        agentsCount: AGENTS_COUNT_BY_QUEUE[base.id],
+        wait: contactsCount > 0 ? formatWaitTime(QUEUE_WAIT_BASE_SECONDS[base.id] + clockTick) : formatWaitTime(0),
+      };
+    });
+  }, [queueSubItems, clockTick]);
 
   /* Side panel */
   const [sidePanelOpen,      setSidePanelOpen]      = useState(false);
@@ -2416,15 +2516,15 @@ export function AgentNextGenPage({
             ref used to position float panels. */}
         <div ref={containerRef} className="relative flex flex-1 min-w-0 overflow-hidden pr-3 pb-3">
 
-          {/* Main Container — flex row so pinned Panel sits left of PageHeader + content.
-              relative so unpinned Panel can overlay the full surface. */}
+          {/* Main Container — flex row so pinned SidePanel sits left of PageHeader + content.
+              relative so unpinned SidePanel can overlay the full surface. */}
           <Container className="flex flex-1 overflow-hidden relative">
 
             {/* Customer Information Panel — one instance whose `pinned` prop
-                just flips Panel's own internal inline-vs-overlay branch, the
-                same way Panel.stories.tsx's "Side Panel" story toggles
-                `pinned`/`open` on a single element. This used to be two
-                separately-gated `<Panel>` elements (one per branch, below) —
+                just flips SidePanel's own internal inline-vs-overlay branch, the
+                same way SidePanel.stories.tsx's "Side Panel — Left/Right" stories
+                toggle `pinned`/`open` on a single element. This used to be two
+                separately-gated `<SidePanel>` elements (one per branch, below) —
                 flipping `effectivePinned` unmounted one and mounted the
                 other, so the very click meant to animate the panel open
                 instead made it jump straight to its resting width (a fresh
@@ -2440,11 +2540,11 @@ export function AgentNextGenPage({
                 clearing effect above already closes/unpins it going into
                 that transition, so unmounting here doesn't lose any
                 pinned/open state that needed to persist.
-                Was a bare `<Panel headerTitle="Designer" .../>` with no
+                Was a bare `<SidePanel headerTitle="Designer" .../>` with no
                 body content — swapped for `CustomerInformationPanel`
                 (lyra-ui) which fixes the header to "Customer Information"
                 and adds a "{name} · {id}" subhead for whoever this
-                interaction is with, composed on top of the same `Panel`
+                interaction is with, composed on top of the same `SidePanel`
                 rather than reimplemented. */}
             {showPanelToggle && activeInteraction && (
               <CustomerInformationPanel
@@ -2486,9 +2586,9 @@ export function AgentNextGenPage({
                   {showPageHeader && (
                     <PageHeader
                       // Hovering this record icon reveals the Designer side
-                      // panel (the unpinned-overlay `Panel` below, via the
+                      // panel (the unpinned-overlay `SidePanel` below, via the
                       // same `onSidePanelHoverStart`/`onSidePanelHoverEnd`
-                      // pair that Panel's own onMouseEnter/onMouseLeave
+                      // pair that SidePanel's own onMouseEnter/onMouseLeave
                       // already use to stay open while the cursor moves from
                       // here onto it). Clicking it is a real on/off toggle —
                       // `handleSidePanelIconToggle` — pins it open on the
@@ -2500,7 +2600,7 @@ export function AgentNextGenPage({
                       // untouched, so this doesn't change anything there.
                       //
                       // The button itself is `PanelPinButton` — the exact
-                      // same trigger `Panel`'s own internal pin button uses
+                      // same trigger `SidePanel`'s own internal pin button uses
                       // (Tooltip, focus ring, and the icon-rotates-45°-when-
                       // pinned animation), just with its `icon` swapped from
                       // `Pin` to `User` — composed, not re-implemented, per
@@ -2595,24 +2695,29 @@ export function AgentNextGenPage({
 
                     {/* ── Queue widgets ──
                         `DashboardQueue` ("cards" variant, its default) —
-                        the numbers come straight from `LATEST_CONTACTS`, so
+                        the numbers come straight from `latestContacts`
+                        (see the "Live queue simulation" state above), so
                         they'd stay in sync with the accordion presentation
                         of the same data if that's ever turned back on (see
-                        the note below). Clicking a widget opens the
-                        interior panel with that queue's sub-queue
-                        breakdown; the selected widget gets the "info-strong"
-                        (blue) treatment `DashboardQueue` applies on
-                        selection, driven by the controlled `selectedId`/
-                        `onSelect` pair kept in sync with the panel state. */}
+                        the note below) — and Contacts/Wait Time visibly
+                        tick/fluctuate in real time rather than sitting
+                        frozen at the same numbers forever. Clicking a
+                        widget opens the interior panel with that queue's
+                        sub-queue breakdown; the selected widget gets the
+                        "info-strong" (blue) treatment `DashboardQueue`
+                        applies on selection, driven by the controlled
+                        `selectedId`/`onSelect` pair kept in sync with the
+                        panel state. */}
                     <DashboardQueue
                       className="mt-6"
-                      items={LATEST_CONTACTS.map((contact) => ({
+                      items={latestContacts.map((contact) => ({
                         id: contact.id,
                         name: contact.name,
                         icon: contact.icon,
                         wait: contact.wait,
                         skillsCount: contact.skillsCount,
                         contactsCount: contact.contactsCount,
+                        agentsCount: contact.agentsCount,
                       }))}
                       selectedId={selectedQueueId}
                       onSelect={setSelectedQueueId}
@@ -2622,7 +2727,7 @@ export function AgentNextGenPage({
                         Removed for now (was `DashboardQueue`'s "accordion"
                         variant, showing the same data as expandable rows
                         with each queue's `InteractionsTable` as content) —
-                        may come back later, so `LATEST_CONTACTS`,
+                        may come back later, so `latestContacts`,
                         `InteractionsTable`, and the rest of the data/markup
                         it depended on are left in place rather than deleted. */}
 
@@ -2646,8 +2751,7 @@ export function AgentNextGenPage({
                   </div>
                 </div>
                 {showInteriorPanel && (
-                  <Panel
-                    variant="interior"
+                  <InteriorPanel
                     side="right"
                     // Reuses this one docked slot for two different jobs —
                     // the pre-existing "Case Details" form and the new
@@ -2659,8 +2763,17 @@ export function AgentNextGenPage({
                     open={interiorPanelOpen || Boolean(selectedQueueId)}
                     headerTitle={
                       selectedQueueId
-                        ? LATEST_CONTACTS.find((c) => c.id === selectedQueueId)?.name ?? "Queue"
+                        ? latestContacts.find((c) => c.id === selectedQueueId)?.name ?? "Queue"
                         : "Case Details"
+                    }
+                    // "{n} Skills" — the same count as the queue widget's own
+                    // Skills metric (`skillsCount`, derived from this exact
+                    // `queueSubItems[selectedQueueId]` list), just surfaced
+                    // in the drill-down panel's own header this time.
+                    headerSubhead={
+                      selectedQueueId
+                        ? `${(queueSubItems[selectedQueueId] ?? []).length} Skills`
+                        : undefined
                     }
                     onClose={() => {
                       setInteriorPanelOpen(false);
@@ -2669,7 +2782,7 @@ export function AgentNextGenPage({
                   >
                     {selectedQueueId ? (
                       <div className="flex flex-col">
-                        {(QUEUE_SUB_ITEMS[selectedQueueId] ?? []).map((item, i) => (
+                        {(queueSubItems[selectedQueueId] ?? []).map((item, i) => (
                           <div
                             key={item.id}
                             className={cn(
@@ -2688,26 +2801,34 @@ export function AgentNextGenPage({
                             </div>
                             <span className="inline-flex items-center gap-1 lyra-body-sm text-lyra-fg-secondary">
                               <Clock className="h-3 w-3" strokeWidth={1.5} />
-                              Wait: {item.wait}
+                              Longest Wait Time: {item.wait}
                             </span>
                             {/* Available / Working / Unavailable agent counts for
                                 this sub-queue — same icons, colors, and order as
                                 PRODUCTIVITY_STATUS_META (Activity/Productivity
                                 cards), just rendered as compact circular Icon
-                                badges instead of a donut/bar. */}
+                                badges instead of a donut/bar. Each badge gets a
+                                hover tooltip spelling out what the count means,
+                                since the color/icon alone doesn't say "agents". */}
                             <div className="flex items-center gap-3">
-                              <span className="inline-flex items-center gap-1.5">
-                                <Icon icon={CheckCircle2} size="sm" background="success" shape="circle" decorative />
-                                <span className="lyra-body-sm-emphasis text-lyra-fg-default">{item.available}</span>
-                              </span>
-                              <span className="inline-flex items-center gap-1.5">
-                                <Icon icon={CircleDot} size="sm" background="warning" shape="circle" decorative />
-                                <span className="lyra-body-sm-emphasis text-lyra-fg-default">{item.working}</span>
-                              </span>
-                              <span className="inline-flex items-center gap-1.5">
-                                <Icon icon={MinusCircle} size="sm" background="critical" shape="circle" decorative />
-                                <span className="lyra-body-sm-emphasis text-lyra-fg-default">{item.unavailable}</span>
-                              </span>
+                              <Tooltip content="Available Agents" placement="top">
+                                <span className="inline-flex items-center gap-1.5">
+                                  <Icon icon={CheckCircle2} size="sm" background="success" shape="circle" decorative />
+                                  <span className="lyra-body-sm-emphasis text-lyra-fg-default">{item.available}</span>
+                                </span>
+                              </Tooltip>
+                              <Tooltip content="Working Agents" placement="top">
+                                <span className="inline-flex items-center gap-1.5">
+                                  <Icon icon={CircleDot} size="sm" background="warning" shape="circle" decorative />
+                                  <span className="lyra-body-sm-emphasis text-lyra-fg-default">{item.working}</span>
+                                </span>
+                              </Tooltip>
+                              <Tooltip content="Unavailable Agents" placement="top">
+                                <span className="inline-flex items-center gap-1.5">
+                                  <Icon icon={MinusCircle} size="sm" background="critical" shape="circle" decorative />
+                                  <span className="lyra-body-sm-emphasis text-lyra-fg-default">{item.unavailable}</span>
+                                </span>
+                              </Tooltip>
                             </div>
                           </div>
                         ))}
@@ -2720,7 +2841,7 @@ export function AgentNextGenPage({
                         <Input label="Tags" placeholder="Add tags" />
                       </div>
                     )}
-                  </Panel>
+                  </InteriorPanel>
                 )}
               </div>
                 </>
