@@ -20,10 +20,10 @@ const panelItems: TreeMenuItem[] = [
 ];
 
 export function OutboundEngagementPage({
-  showChip = false,
+  showBadge = false,
   onAiPanelToggle,
 }: {
-  showChip?: boolean;
+  showBadge?: boolean;
   onAiPanelToggle?: () => void;
 }) {
   return (
@@ -34,7 +34,7 @@ export function OutboundEngagementPage({
       defaultLeftPinned
       showPageHeader
       pageTitle="Campaigns"
-      pageChip={showChip ? "Active" : undefined}
+      pageBadge={showBadge ? "Active" : undefined}
       pageActions={
         <>
           <Button variant="outline">Secondary</Button>

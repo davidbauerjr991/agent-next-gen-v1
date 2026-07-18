@@ -6,7 +6,7 @@ import {
   AppName,
   AppMenu,
   CXoneLogo,
-  Overlay,
+  Modal,
   AiPanel,
   DraggablePanel,
   NotificationsBell,
@@ -18,6 +18,7 @@ import {
   PanelPinButton,
   PageHeader,
   Button,
+  ActionIconButton,
   AiSparkleIcon,
   Tag,
   Input,
@@ -33,7 +34,7 @@ import {
   TableCell,
   SortableTableHead,
   Icon,
-  Divider,
+  Separator,
   DonutChart,
   DashboardCard,
   DashboardQueue,
@@ -913,7 +914,7 @@ function PerformanceBreakdownCard() {
           );
         })}
 
-        <Divider />
+        <Separator />
 
         {/* Ring chart + legend — same Available/Working/Unavailable data as
             the rows above, just visualized as a ring instead of stacked bars. */}
@@ -967,7 +968,7 @@ function PerformanceSummaryCard() {
           <span className="lyra-body-md text-lyra-fg-secondary">Overall Performance</span>
           <span className="lyra-heading-sm text-lyra-status-success-strong">{data.overallPerformance}</span>
         </div>
-        <Divider />
+        <Separator />
 
         {/* Channel Type breakdown — same row shape as PerformanceBreakdownCard's
             Productivity rows (icon+label+value, indented "Team" comparison line
@@ -995,7 +996,7 @@ function PerformanceSummaryCard() {
             );
           })}
 
-          <Divider />
+          <Separator />
 
           {/* Overall — the summed total, same row shape but with no icon and no indent on its own Team line (it's a total, not a per-channel comparison). */}
           <div className="flex flex-col gap-1.5">
@@ -1446,7 +1447,7 @@ export function AgentNextGenPage({
   }, [activeInteractionId]);
   const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
   const [notifications, setNotifications] = useState(INITIAL_NOTIFICATIONS);
-  const [agentStatus, setAgentStatus] = useState<AgentStatus>("offline");
+  const [agentStatus, setAgentStatus] = useState<AgentStatus>("unavailable");
   const [showWelcomeModal, setShowWelcomeModal] = useState(true);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [appMenuOpen, setAppMenuOpen] = useState(false);
@@ -1696,25 +1697,24 @@ export function AgentNextGenPage({
     }
   }, [isNavNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // No hidden gating here — matches lyra-ui's `Panel.stories.tsx` "Side
-  // Panel" story, where `pinned` and `open` are two plain, independent
-  // booleans and nothing about toggling one disables the other's normal
-  // control going forward. Hovering the icon always previews the panel
-  // while unpinned, exactly like that story's `Panel` does — including
-  // right after an icon-click unpin, which previously left a
-  // `sidePanelHoverEnabled` flag permanently `false` for the rest of the
-  // interaction (reset only on leaving the interaction or going narrow) —
-  // a stricter, one-off "click to reopen" behavior that doesn't match the
-  // plain Panel model and that this fixes.
+  // Both guarded on `sidePanelPinned` — matches `admin-shell.tsx`'s
+  // `handleLeftHoverStart`/`handleLeftHoverEnd` (the canonical `SidePanel`
+  // reference): hover previews the panel while *unpinned* only. Once
+  // pinned, hover does nothing at all in either direction — open/closed is
+  // controlled exclusively by the click toggle (`handleSidePanelIconToggle`)
+  // while pinned, same as every other `SidePanel` consumer in this system.
+  // `onSidePanelHoverStart` used to have no pinned guard at all, so hovering
+  // the icon could silently reopen a pinned-but-closed panel — inconsistent
+  // with the click-only contract above. (Still no `sidePanelHoverEnabled`
+  // flag or other hidden gating beyond this one plain check — that flag was
+  // removed earlier this session for leaving a stricter one-off "click to
+  // reopen" state stuck after an icon-click unpin; this fix is orthogonal to
+  // that and doesn't reintroduce it.)
   const onSidePanelHoverStart = () => {
+    if (sidePanelPinned) return;
     clearTimeout(sidePanelTimer.current);
     setSidePanelOpen(true);
   };
-  // Guarded on `sidePanelPinned`: once the icon has pinned the panel open,
-  // moving the mouse away must NOT auto-close it after the delay below —
-  // that would silently undo the pin the moment the cursor left, which
-  // defeats the entire point of pinning. Unpinned/hover-preview mode is the
-  // only case this timer should ever fire for.
   const onSidePanelHoverEnd = () => {
     if (sidePanelPinned) return;
     sidePanelTimer.current = setTimeout(() => setSidePanelOpen(false), 300);
@@ -1724,17 +1724,18 @@ export function AgentNextGenPage({
     setSidePanelOpen(true);
   };
   /* Click on the interaction record icon (see the `icon` prop on that
-     PageHeader below) — distinct from `handleSidePanelPinToggle` above
-     (the panel's own internal pin button), which always leaves the panel
-     open (just switches it between pushing layout and floating overlay).
-     This one is a real on/off toggle: click once to pin the Designer panel
-     open, click again to unpin *and* close it — "closing" is the whole
-     point of a toggle on the icon that triggered it in the first place. */
+     PageHeader below) — toggles open/closed only, and only while already
+     pinned (matching admin-shell.tsx's handleLeftToggle/handleRightToggle:
+     a no-op while unpinned, since that state is hover-driven instead).
+     Deliberately does NOT touch `sidePanelPinned` — pinning/unpinning is
+     `handleSidePanelPinToggle`'s job alone (the panel's own internal pin
+     button). This used to also flip `sidePanelPinned` to match, which
+     meant "closing" a pinned panel via this icon silently unpinned it too
+     — so reopening it later (e.g. by hovering) came back unpinned instead
+     of staying pinned like Panel.stories.tsx's "Side Panel" reference
+     behavior requires. */
   const handleSidePanelIconToggle = () => {
-    clearTimeout(sidePanelTimer.current);
-    const nextPinned = !sidePanelPinned;
-    setSidePanelPinned(nextPinned);
-    setSidePanelOpen(nextPinned);
+    if (effectivePinned) setSidePanelOpen((v) => !v);
   };
 
   const MAX_PANEL_HEIGHT = 860;
@@ -2006,13 +2007,16 @@ export function AgentNextGenPage({
   const { launchRequest: outboundLaunchRequest, onLaunchRequestHandled, getHeaderAction } = useOutboundAddButton(outboundConfig);
 
   /* Welcome modal — shown once on page load; "Go Available" flips the agent
-     to Available, "Start Offline" keeps them Offline (the default state). */
+     to Available, "Start Unavailable" keeps them Unavailable (the default
+     state). lyra-ui's `AgentStatus` dropped "offline" (just
+     Available/Unavailable now), so this no longer keeps the agent
+     "Offline" — Unavailable is the closest equivalent starting state. */
   const handleGoAvailable = () => {
     handleStatusChange("available");
     setShowWelcomeModal(false);
   };
-  const handleStartOffline = () => {
-    handleStatusChange("offline");
+  const handleStartUnavailable = () => {
+    handleStatusChange("unavailable");
     setShowWelcomeModal(false);
   };
 
@@ -2318,57 +2322,50 @@ export function AgentNextGenPage({
         }
         actions={
           <>
-            {/* Screen Pop / Conversations / Schedule — same hand-rolled
-                trigger shape as Notifications/Ask AI (`h-10 w-10
-                rounded-lyra-lg text-lyra-fg-default`, Tooltip-wrapped) and
-                open the same blank, draggable/dockable `DraggablePanel`
-                (lyra-ui) each titled to match its own trigger's label, per
-                request. Labeled "Conversations" (renamed from "Messages" —
-                same trigger/panel, just the label). Screen Pop sits to the
-                left of Conversations, using lucide's `MonitorUp` (monitor +
-                up arrow) to match the requested icon exactly. */}
-            <Tooltip content="Screen Pop" placement="bottom" asLabel>
-              <button
-                type="button"
-                aria-label="Screen Pop"
-                aria-expanded={popOpen}
-                onClick={() => setPopOpen((v) => !v)}
-                className={cn(
-                  "relative flex h-10 w-10 items-center justify-center rounded-lyra-lg text-lyra-fg-default transition-colors hover:bg-lyra-state-hover active:bg-lyra-state-pressed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus",
-                  popOpen && "bg-lyra-state-hover"
-                )}
-              >
-                <MonitorUp className="h-5 w-5" strokeWidth={1.5} />
-              </button>
-            </Tooltip>
-            <Tooltip content="Conversations" placement="bottom" asLabel>
-              <button
-                type="button"
-                aria-label="Conversations"
-                aria-expanded={convOpen}
-                onClick={() => setConvOpen((v) => !v)}
-                className={cn(
-                  "relative flex h-10 w-10 items-center justify-center rounded-lyra-lg text-lyra-fg-default transition-colors hover:bg-lyra-state-hover active:bg-lyra-state-pressed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus",
-                  convOpen && "bg-lyra-state-hover"
-                )}
-              >
-                <MessageSquare className="h-5 w-5" strokeWidth={1.5} />
-              </button>
-            </Tooltip>
-            <Tooltip content="Schedule" placement="bottom" asLabel>
-              <button
-                type="button"
-                aria-label="Schedule"
-                aria-expanded={schedOpen}
-                onClick={() => setSchedOpen((v) => !v)}
-                className={cn(
-                  "relative flex h-10 w-10 items-center justify-center rounded-lyra-lg text-lyra-fg-default transition-colors hover:bg-lyra-state-hover active:bg-lyra-state-pressed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus",
-                  schedOpen && "bg-lyra-state-hover"
-                )}
-              >
-                <CalendarDays className="h-5 w-5" strokeWidth={1.5} />
-              </button>
-            </Tooltip>
+            {/* Screen Pop / Conversations / Schedule / Notifications / Ask AI
+                — all five now go through lyra-ui's `ActionIconButton`
+                (`size="xl"`, 44px), the single canonical AppHeader
+                icon-button shape. These used to be hand-rolled
+                `<button>`s (`h-10 w-10 rounded-lyra-lg`) matching
+                `NotificationsBell`'s own trigger, which at the time was
+                also hand-rolled rather than built on `ActionIconButton` —
+                lyra-ui has since consolidated `NotificationsBell` and
+                `ActionIconButton` onto one shared implementation (composing
+                `Button` internally), with 44px/`rounded-lyra-sm` as the
+                confirmed canonical AppHeader size, so this row now matches
+                `Header.tsx`'s (and lyra-ui's own `AppHeader.stories.tsx`)
+                icon buttons instead of diverging from them. Labeled
+                "Conversations" (renamed from "Messages" — same
+                trigger/panel, just the label). Screen Pop sits to the left
+                of Conversations, using lucide's `MonitorUp` (monitor + up
+                arrow) to match the requested icon exactly. */}
+            <ActionIconButton
+              size="xl"
+              title="Screen Pop"
+              aria-expanded={popOpen}
+              onClick={() => setPopOpen((v) => !v)}
+              className={popOpen ? "bg-lyra-state-hover" : undefined}
+            >
+              <MonitorUp className="h-5 w-5" strokeWidth={1.5} />
+            </ActionIconButton>
+            <ActionIconButton
+              size="xl"
+              title="Conversations"
+              aria-expanded={convOpen}
+              onClick={() => setConvOpen((v) => !v)}
+              className={convOpen ? "bg-lyra-state-hover" : undefined}
+            >
+              <MessageSquare className="h-5 w-5" strokeWidth={1.5} />
+            </ActionIconButton>
+            <ActionIconButton
+              size="xl"
+              title="Schedule"
+              aria-expanded={schedOpen}
+              onClick={() => setSchedOpen((v) => !v)}
+              className={schedOpen ? "bg-lyra-state-hover" : undefined}
+            >
+              <CalendarDays className="h-5 w-5" strokeWidth={1.5} />
+            </ActionIconButton>
             <NotificationsBell
               notifications={notifications}
               open={notifOpen}
@@ -2378,42 +2375,28 @@ export function AgentNextGenPage({
             {/* Sole "Ask AI" entry point — the PageHeader labeled button
                 (Desk dashboard and the record-page header) was removed so
                 this AppHeader icon is the only trigger for `aiPanelOpen`/
-                `AiPanel` now.
-                Matches lyra-ui's canonical markup exactly, not an
-                `ActionIconButton` approximation: a hand-rolled `<button>`
-                (`h-10 w-10 rounded-lyra-lg text-lyra-fg-default`, identical
-                to `NotificationsBell`'s own trigger) wrapped in a real
-                `Tooltip`, rendering lyra-ui's exported `AiSparkleIcon` — the
-                same solid-color sparkle mark `AgentNextGenTemplate.stories.tsx`
-                and `lyra-ux-templates`' `AgentNextGenPage.tsx` both use here.
-                This app had drifted to lucide's `Sparkles` icon inside an
-                `ActionIconButton` (different icon shape *and* a different
-                border radius, `rounded-lyra-sm`) — caught when the user
-                compared this app against lyra-ui directly and it visibly
-                didn't match. See the "check lyra-ui's own markup, not just
-                an approximation" pattern under Important Patterns below. */}
-            <Tooltip content="Ask AI" placement="bottom" asLabel>
-              <button
-                type="button"
-                aria-label="Ask AI"
-                aria-expanded={aiPanelOpen}
-                onClick={() => setAiPanelOpen((v) => !v)}
-                className={cn(
-                  "relative flex h-10 w-10 items-center justify-center rounded-lyra-lg text-lyra-fg-default transition-colors hover:bg-lyra-state-hover active:bg-lyra-state-pressed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus",
-                  aiPanelOpen && "bg-lyra-state-hover"
-                )}
-              >
-                <AiSparkleIcon />
-              </button>
-            </Tooltip>
+                `AiPanel` now. Renders lyra-ui's exported `AiSparkleIcon` —
+                the same solid-color sparkle mark `AgentNextGenTemplate.
+                stories.tsx` and `lyra-ux-templates`' `AgentNextGenPage.tsx`
+                both use here — via `ActionIconButton` (44px, matching every
+                other icon button in this row now). */}
+            <ActionIconButton
+              size="xl"
+              title="Ask AI"
+              aria-expanded={aiPanelOpen}
+              onClick={() => setAiPanelOpen((v) => !v)}
+              className={aiPanelOpen ? "bg-lyra-state-hover" : undefined}
+            >
+              <AiSparkleIcon />
+            </ActionIconButton>
             {/* Separator between the icon-button row (Screen Pop through Ask
                 AI) and AgentProfile — `orientation="vertical"` + `h-auto
                 self-stretch` is the same sizing lyra-ui's own vertical
-                Divider usage uses (see `dashboard-card.tsx`'s metric-row
+                Separator usage uses (see `dashboard-card.tsx`'s metric-row
                 divider) so it stretches to match the row's height inside
                 AppHeader's `flex items-center` actions container instead of
                 a hand-picked fixed height. */}
-            <Divider orientation="vertical" className="h-auto self-stretch" />
+            <Separator orientation="vertical" className="h-auto self-stretch" />
             <AgentProfile
               name="John Smith"
               initials="JS"
@@ -3050,49 +3033,56 @@ export function AgentNextGenPage({
       </div>
 
       {/* ── Welcome modal — shown once on page load. Uses the real lyra-ui
-          Overlay component (variant="light": frosted blur backdrop,
-          portal-rendered via Radix Dialog) rather than a hand-rolled backdrop
-          div, so it actually dims/blurs the dashboard behind it like a real
-          overlay instead of just painting over it. Not dismissible via
-          backdrop click or Escape — only the two buttons close it.
+          `Modal` component (variant="light": frosted blur backdrop,
+          portal-rendered via Radix Dialog, focus-trapped) rather than a
+          hand-rolled backdrop div, so it actually dims/blurs the dashboard
+          behind it like a real overlay instead of just painting over it.
+          Not dismissible via backdrop click or Escape — only the two
+          buttons close it. Previously composed by hand as `Overlay` +
+          `AgentWelcomeMessage` (which itself rendered its own
+          `Container variant="modal"` shell) — `Modal` now owns that
+          Radix Dialog wiring directly, so `AgentWelcomeMessage` is passed
+          `bare` to skip its own card chrome and avoid nesting two.
 
-          Overlay's "light" variant is a fixed `bg-white/70` by design (see
+          `Modal`'s "light" variant is a fixed `bg-white/70` by design (see
           Overlay.stories.tsx — "light" vs. "dark" are two deliberately
           static, theme-independent overlay looks, not meant to react to
           dark mode). This page's backdrop needs to actually match the
           current theme, so we override just the background color via
-          `className` (twMerge drops the variant's `bg-white/70` for this
-          `bg-[color-mix(...)]`, keeping `backdrop-blur-sm`). We use
+          `overlayClassName` (twMerge drops the variant's `bg-white/70` for
+          this `bg-[color-mix(...)]`, keeping `backdrop-blur-sm`). We use
           color-mix() instead of a plain `bg-lyra-bg-surface-shell/70`
           opacity modifier because Tailwind can't generate opacity-modified
           utilities for our `var(--lyra-color-*)` tokens (same root cause as
           the Tag border-color bug — see lyra-ui's PROJECT_SUMMARY.md).
 
-          The card itself is the shared `AgentWelcomeMessage` lyra-ui
-          component (icon/title/lastLogin block + info-box slot + Divider +
-          two-button footer, all via `Container variant="modal"` — same
-          shell `LoginCard` uses, so every modal in the app shares one
-          background) rather than hand-rolled markup local to this app. ── */}
-      <Overlay
+          The card itself is still the shared `AgentWelcomeMessage` lyra-ui
+          component (icon/title/lastLogin block + info-box slot + Separator +
+          two-button footer) — `ariaTitle` gives screen readers the real
+          dialog name since that title now renders inside `AgentWelcomeMessage`
+          itself rather than through `Modal`'s own `headerTitle`. ── */}
+      <Modal
         variant="light"
-        className="bg-[color-mix(in_srgb,var(--lyra-color-bg-surface-shell)_75%,transparent)]"
+        overlayClassName="bg-[color-mix(in_srgb,var(--lyra-color-bg-surface-shell)_75%,transparent)]"
         open={showWelcomeModal}
         onClose={() => setShowWelcomeModal(false)}
         closeOnBackdropClick={false}
+        ariaTitle={`Good morning, ${CURRENT_AGENT_FIRST_NAME} ${CURRENT_AGENT_LAST_NAME}`}
       >
         <AgentWelcomeMessage
+          bare
           icon={<img src={appIcon} alt="" className="h-8 w-8 shrink-0" />}
           title={`Good morning, ${CURRENT_AGENT_FIRST_NAME} ${CURRENT_AGENT_LAST_NAME}`}
           lastLogin={WELCOME_MODAL_LAST_LOGIN}
           onPrimaryClick={handleGoAvailable}
-          onSecondaryClick={handleStartOffline}
+          onSecondaryClick={handleStartUnavailable}
         >
           <p className="lyra-body-md text-lyra-fg-default">
             You are currently assigned to {AGENT_SKILLS_COUNT} skills. {TEAMMATES_ONLINE_COUNT} teammates are
             online, {TEAMMATES_AVAILABLE_COUNT} are available. Select an option below to begin.
           </p>
         </AgentWelcomeMessage>
-      </Overlay>
+      </Modal>
     </div>
   );
 }

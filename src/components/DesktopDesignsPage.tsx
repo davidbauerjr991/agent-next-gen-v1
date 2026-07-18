@@ -75,7 +75,7 @@ const records: DesktopRecord[] = [
   { id: 16, name: "Agent Desktop #16", published: true, customerCard: "—", description: "Utilities", createdBy: "Jim Smith", createdDate: "02/23/2025 02:32...", modifiedDate: "02/23/2025 02:32...", version: 27 },
 ];
 
-export function DesktopDesignsPage({ showChip = false, onAiPanelToggle }: { showChip?: boolean; onAiPanelToggle?: () => void }) {
+export function DesktopDesignsPage({ showBadge = false, onAiPanelToggle }: { showBadge?: boolean; onAiPanelToggle?: () => void }) {
 
   /* ── Interior panel (Toolbar toggle) — controlled here since it's opened
      from inside the table toolbar, which lives in AdminShell's children. ── */
@@ -164,7 +164,7 @@ export function DesktopDesignsPage({ showChip = false, onAiPanelToggle }: { show
       navItems={panelItems}
       showPageHeader
       pageTitle="Desktop Library"
-      pageChip={showChip ? "Active" : undefined}
+      pageBadge={showBadge ? "Active" : undefined}
       pageActions={
         <>
           <Button variant="outline">Secondary</Button>

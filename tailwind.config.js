@@ -35,6 +35,29 @@ export default {
       fontFamily: {
         sans: ["Inter", "ui-sans-serif", "system-ui", "-apple-system", "sans-serif"],
       },
+      // Accordion height animation — required now that lyra-ui's `Accordion`
+      // is built on @radix-ui/react-accordion. Kept in sync (hand-copied,
+      // same as borderRadius/fontFamily above) with the identical block in
+      // lyra-ui/tailwind.config.js and lyra-ui/src/tailwind-preset.ts.
+      // Without this, Accordion's `data-[state=open]:animate-accordion-down`/
+      // `-up` classes exist in the DOM with no matching CSS rule — the
+      // accordion still opens/closes correctly, just with the animation
+      // silently missing (snaps instead of animating), the same class of
+      // bug documented in the "Cross-Repo Sync" incident above.
+      keyframes: {
+        "accordion-down": {
+          from: { height: "0" },
+          to: { height: "var(--radix-accordion-content-height)" },
+        },
+        "accordion-up": {
+          from: { height: "var(--radix-accordion-content-height)" },
+          to: { height: "0" },
+        },
+      },
+      animation: {
+        "accordion-down": "accordion-down 200ms ease-in-out",
+        "accordion-up": "accordion-up 200ms ease-in-out",
+      },
     },
   },
   plugins: [require("tailwindcss-animate")],
