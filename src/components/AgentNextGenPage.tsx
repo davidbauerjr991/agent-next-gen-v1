@@ -17,7 +17,9 @@ import {
   CustomerInformationPanel,
   PanelPinButton,
   PageHeader,
+  PanelHeader,
   Button,
+  Textarea,
   ActionIconButton,
   AiSparkleIcon,
   Tag,
@@ -34,6 +36,8 @@ import {
   TableCell,
   SortableTableHead,
   Icon,
+  Badge,
+  SearchInput,
   Separator,
   DonutChart,
   DashboardCard,
@@ -54,6 +58,7 @@ import {
   type NavItem,
   type SortDirection,
   type DateRange,
+  type TagVariant,
   type CreateNewOutboundConfig,
   type CreateNewOutboundContact,
   type InteractionChannel,
@@ -97,6 +102,17 @@ import {
   Inbox,
   CalendarDays,
   MonitorUp,
+  History,
+  ChevronRight,
+  Copy,
+  Tags,
+  Paperclip,
+  Bold,
+  Italic,
+  Smile,
+  Zap,
+  FileText,
+  Send,
   type LucideIcon,
 } from "lucide-react";
 
@@ -592,6 +608,11 @@ const INITIAL_QUEUE_SUB_ITEMS: Record<string, QueueSubItem[]> = {
     { id: "w2", label: "Escalations",     icon: ClipboardList, inQueueCount: 1, wait: "10m", available: 1, working: 1, unavailable: 0 },
     { id: "w3", label: "Billing Review",  icon: ClipboardList, inQueueCount: 0, wait: "0s",  available: 1, working: 0, unavailable: 0 },
   ],
+  "5": [
+    { id: "ov1", label: "Outbound_Sales_Voice",       icon: PhoneOutgoing, inQueueCount: 1, wait: "0s", available: 2, working: 1, unavailable: 0 },
+    { id: "ov2", label: "Outbound_Renewals",          icon: PhoneOutgoing, inQueueCount: 0, wait: "0s", available: 1, working: 0, unavailable: 0 },
+    { id: "ov3", label: "Outbound_Win_Back_Campaign", icon: PhoneOutgoing, inQueueCount: 1, wait: "0s", available: 1, working: 1, unavailable: 1 },
+  ],
 };
 
 /* Contact-in-queue counts for each queue widget — NOT independently
@@ -614,7 +635,7 @@ function sumInQueue(items: QueueSubItem[]): number {
  *  available/working/unavailable are per-channel, not a queue-wide total),
  *  so unlike `contactsCount`/`skillsCount` this one has no underlying list
  *  to derive from and is just seeded to match the reference screenshot. */
-const AGENTS_COUNT_BY_QUEUE: Record<string, number> = { "1": 3, "2": 2, "3": 3, "4": 11 };
+const AGENTS_COUNT_BY_QUEUE: Record<string, number> = { "1": 3, "2": 2, "3": 3, "4": 11, "5": 4 };
 
 /** Baseline queue-wait seconds (matches the reference screenshot's
  *  00:02:34 / 00:00:00 / 00:02:00 / 00:00:24) — the component below adds
@@ -622,7 +643,7 @@ const AGENTS_COUNT_BY_QUEUE: Record<string, number> = { "1": 3, "2": 2, "3": 3, 
  *  "Wait Time" ticks up in real time like a live clock, the same
  *  convention `formatElapsedTime`'s callers already use for interaction
  *  elapsed-time displays. */
-const QUEUE_WAIT_BASE_SECONDS: Record<string, number> = { "1": 154, "2": 0, "3": 120, "4": 24 };
+const QUEUE_WAIT_BASE_SECONDS: Record<string, number> = { "1": 154, "2": 0, "3": 120, "4": 24, "5": 0 };
 
 /* Everything about each queue widget that never changes on its own — kept
    separate from the derived/ticking fields (`contactsCount`, `skillsCount`,
@@ -634,6 +655,7 @@ const LATEST_CONTACTS_STATIC: Omit<LatestContact, "contactsCount" | "skillsCount
   { id: "2", name: "Inbound Voice", icon: PhoneIncoming, status: "open",   channel: "Atlas", caseId: "CST-21016", interactions: buildInteractions(2, "open", 5) },
   { id: "3", name: "Voicemail",     icon: Voicemail,     status: "closed", channel: "Atlas", caseId: "CST-21028", interactions: buildInteractions(3, "closed", 1) },
   { id: "4", name: "Work Item",     icon: ClipboardList, status: "open",   channel: "Emily", caseId: "CST-15001", interactions: buildInteractions(4, "open", 7) },
+  { id: "5", name: "Outbound Voice", icon: PhoneOutgoing, status: "open",  channel: "Atlas", caseId: "CST-21042", interactions: buildInteractions(5, "open", 2) },
 ];
 
 /* ── Home screen summary cards ── */
@@ -1023,31 +1045,42 @@ function PerformanceSummaryCard() {
    exactly this content, so those values are that screenshot's own data,
    not derived from any other part of the app. Composed entirely from
    existing lyra-ui atoms — `DashboardCard` for the card shell
-   (`headerActions` holding the same `DateFilterChip` the Performance/
-   Productivity cards' own headers use, not a one-off "View All" button, so
-   this card's date control matches theirs exactly), `Tag` for the status
-   pill (`variant="success"` for Resolved, `"warning"` for Transferred —
-   the same bordered-tint look CONTRIBUTING.md's Tag entry documents), and
-   a plain `Button variant="outline"` for "Redial" (reusing the same
-   `PhoneOutgoing` icon `InteractionRowActions`' kebab menu already uses for
-   its own "Redial" action, rather than inventing a second icon for the
-   same meaning) — no hand-rolled badge/pill markup.
+   (`headerActions` holding this card's own `ContactHistoryDateFilterChip`
+   — a separate, 3-option "Today / Last 48 Hours / Last 72 Hours"
+   control, not the shared `DateFilterChip` the Performance/Productivity
+   cards' headers use, since this card's range options and cumulative-
+   window semantics are its own — see `ContactHistoryDateFilterValue`'s own
+   doc comment for why), `Badge` (`shape="circle" dot`) + plain text for the
+   status indicator (critical=red/Escalated, info=blue/In Progress,
+   success=green/Resolved, neutral=gray/New), and a plain `Button
+   variant="outline"` for "Redial" (reusing the same `PhoneOutgoing` icon
+   `InteractionRowActions`' kebab menu already uses for its own "Redial"
+   action, rather than inventing a second icon for the same meaning) — no
+   hand-rolled badge/pill markup.
 
    Row set is driven by the selected date range (`CONTACT_HISTORY_BY_RANGE`):
-   "Today" (the default on login — nothing has happened yet this session)
-   and "Custom" (no range chosen yet) both render empty, showing a
-   "Nothing to Display" placeholder instead of an empty list; "Yesterday"
-   shows the base 5 rows; "Last 7 days" widens that with 5 more rows pulled
-   from the shared customer "database" (`CREATE_NEW_CUSTOMERS`, the same
-   fixture `OUTBOUND_CUSTOMERS` above already sources from) rather than
-   inventing unrelated names, so a wider range reads as more of the same
-   real customer base. */
+   "Today" (the default on login) shows `TODAY_CONTACT_HISTORY`'s 4 rows;
+   "Last 48 Hours" adds the 5 hand-authored `CONTACT_HISTORY` rows on top
+   of that; "Last 72 Hours" adds 5 more (`EXTENDED_CONTACT_HISTORY`)
+   pulled from the shared customer "database" (`CREATE_NEW_CUSTOMERS`, the
+   same fixture `OUTBOUND_CUSTOMERS` above already sources from) rather than
+   inventing unrelated names. Each range is a strict superset of the one
+   before it — today's own rows never disappear just because a wider range
+   is selected. */
+
+/** Case-status color — "critical" (red, Escalated), "info" (blue, In
+ *  Progress), "success" (green, Resolved), "neutral" (gray, New). Reuses
+ *  `Badge`'s own `BadgeCircleVariant` names directly (see the status
+ *  badge's own rendering below) rather than a separate string union, so
+ *  there's no separate mapping table that could drift out of sync with
+ *  what `Badge` actually accepts. */
+type ContactHistoryStatusVariant = "critical" | "info" | "success" | "neutral";
 
 interface ContactHistoryEntry {
   id: string;
   name: string;
   statusLabel: string;
-  statusVariant: "success" | "warning";
+  statusVariant: ContactHistoryStatusVariant;
   /** Voice contacts only — shows a "Redial" action next to the status tag. */
   redial: boolean;
   description: string;
@@ -1056,6 +1089,17 @@ interface ContactHistoryEntry {
   channelLabel: string;
   timeAgo: string;
   duration: string;
+  /** The real `CREATE_NEW_CUSTOMERS` record id backing this row, when this
+   *  entry was built from that fixture (see `buildContactHistoryFromCustomers`
+   *  below) — undefined for the hand-authored `CONTACT_HISTORY` rows above,
+   *  which have no real customer record behind their invented names/case
+   *  IDs. `handleRedial` uses this (when present) as the redialed
+   *  interaction's own id instead of a synthetic `redial:` one, so the
+   *  resulting card's id resolves in `useOutboundAddButton`'s contact
+   *  lookup the exact same way a card started from the Outbound picker
+   *  does — see `handleRedial`'s own doc comment for why a synthetic id
+   *  silently broke that card's "+" (Add Channel) button. */
+  customerId?: string;
 }
 
 const CONTACT_HISTORY_CHANNEL_ICON: Record<ContactHistoryEntry["channelType"], LucideIcon> = {
@@ -1081,7 +1125,7 @@ const CONTACT_HISTORY: ContactHistoryEntry[] = [
     caseId: "CST-16823", channelType: "email", channelLabel: "Email", timeAgo: "2h ago", duration: "6m 30s",
   },
   {
-    id: "ch4", name: "Lauren Briggs", statusLabel: "Transferred", statusVariant: "warning", redial: true,
+    id: "ch4", name: "Lauren Briggs", statusLabel: "Escalated", statusVariant: "critical", redial: true,
     description: "Escalated fraud investigation — 4 suspicious transactions",
     caseId: "CST-27760", channelType: "voice", channelLabel: "Voice", timeAgo: "5h ago", duration: "22m 47s",
   },
@@ -1098,6 +1142,29 @@ const CONTACT_HISTORY_CHANNEL_LABEL: Record<ContactHistoryEntry["channelType"], 
   email: "Email",
 };
 
+/** Channel-type tag color — Voice/Chat/Email each get one of `Tag`'s fixed
+ *  "purple"/"teal"/"pink" accent variants (see CONTRIBUTING.md's "Channel
+ *  type colors" convention) rather than a one-off className per row, so
+ *  any other spot that adds a channel-type tag later picks the same
+ *  mapping instead of inventing its own. */
+const CONTACT_HISTORY_CHANNEL_TAG_VARIANT: Record<ContactHistoryEntry["channelType"], TagVariant> = {
+  voice: "purple",
+  chat: "teal",
+  email: "pink",
+};
+
+/** Same Voice/Chat/Email → purple/teal/pink mapping as
+ *  `CONTACT_HISTORY_CHANNEL_TAG_VARIANT` above, as plain icon-color
+ *  classes instead of a `Tag` variant — for spots like
+ *  `InteractionsTable`'s per-row type icon, where the channel indicator is
+ *  a bare icon (no room for a pill in a 48px column) but should still tint
+ *  to the same three hues rather than sitting flat gray. */
+const CHANNEL_TYPE_ICON_COLOR_CLASS: Record<ContactHistoryEntry["channelType"], string> = {
+  voice: "text-lyra-accent-purple-strong",
+  chat: "text-lyra-accent-teal-strong",
+  email: "text-lyra-accent-pink-strong",
+};
+
 /** Maps a customer's supported `ChannelType[]` (from `CREATE_NEW_CUSTOMERS`,
  *  e.g. `["email", "sms", "voice"]`) down to Contact History's own narrower
  *  channel grouping — voice takes priority (it's what "Redial" needs),
@@ -1109,80 +1176,240 @@ function contactHistoryChannelType(channels: ChannelType[]): ContactHistoryEntry
   return "email";
 }
 
-// Fixed customer indexes + content templates for the 5 extra "Last 7 days"
-// rows — deterministic (not `Math.random()`), matching the rest of this
-// file's dummy-data convention. Names/case IDs come from the real
-// `CREATE_NEW_CUSTOMERS` records at these indexes; only the description/
-// status/timing are authored here.
-const EXTENDED_CONTACT_HISTORY_CUSTOMER_INDEXES = [5, 12, 19, 26, 33];
-const EXTENDED_CONTACT_HISTORY_TEMPLATES: {
+/** Shared per-row content shape for every customer-derived (as opposed to
+ *  hand-authored, like `CONTACT_HISTORY` above) Contact History row —
+ *  everything except what's already on the `CREATE_NEW_CUSTOMERS` record
+ *  itself (name/caseId) or derived from it (channelType/channelLabel/
+ *  redial, via `contactHistoryChannelType`). */
+interface ContactHistoryTemplate {
   statusLabel: string;
-  statusVariant: "success" | "warning";
+  statusVariant: ContactHistoryStatusVariant;
   description: string;
   timeAgo: string;
   duration: string;
-}[] = [
+}
+
+/** Builds a set of Contact History rows from real `CREATE_NEW_CUSTOMERS`
+ *  fixture records — same "deterministic indexes, not `Math.random()`"
+ *  convention as the rest of this file's dummy data. `customerIndexes[i]`
+ *  pairs with `templates[i]`; `idPrefix` keeps each range's ids from
+ *  colliding with another range's (e.g. "Today" vs. "Last 7 days" picking
+ *  overlapping customer indexes would otherwise produce duplicate React
+ *  keys if both ever rendered in the same list). */
+function buildContactHistoryFromCustomers(
+  customerIndexes: number[],
+  templates: ContactHistoryTemplate[],
+  idPrefix: string
+): ContactHistoryEntry[] {
+  return customerIndexes.map((customerIndex, i) => {
+    const customer = CREATE_NEW_CUSTOMERS[customerIndex];
+    const channelType = contactHistoryChannelType(customer.channels);
+    return {
+      id: `${idPrefix}-${customer.id}`,
+      name: customer.name,
+      // `customer.customerId` is already "CST-…"-prefixed — use it as-is
+      // rather than re-prefixing into "CST-CST-…".
+      caseId: customer.customerId,
+      channelType,
+      channelLabel: CONTACT_HISTORY_CHANNEL_LABEL[channelType],
+      redial: channelType === "voice",
+      // The real `CREATE_NEW_CUSTOMERS` id (e.g. "customer-9") — see
+      // `ContactHistoryEntry.customerId`'s own doc comment for why
+      // `handleRedial` needs this.
+      customerId: customer.id,
+      ...templates[i],
+    };
+  });
+}
+
+// Fixed customer indexes + content templates for the 4 "Today" rows — the
+// range shown on page load, so these need to read as *today's* activity
+// (minutes/an hour or two ago, not "1d ago"+). Indexes chosen to land on
+// 4 different customers than "Last 72 Hours" below uses (no index overlap
+// with EXTENDED_CONTACT_HISTORY_CUSTOMER_INDEXES) and to alternate
+// voice/chat channel types the same way the hand-authored CONTACT_HISTORY
+// rows above do (this fixture's own channel-assignment rule — see
+// create-new-customers-data.ts's `buildCustomers` — never actually
+// produces an email-only customer, so "Today" mixes voice/chat like
+// "Last 72 Hours" already does rather than trying to force an email row).
+const TODAY_CONTACT_HISTORY_CUSTOMER_INDEXES = [1, 8, 13, 15];
+const TODAY_CONTACT_HISTORY_TEMPLATES: ContactHistoryTemplate[] = [
+  { statusLabel: "Resolved", statusVariant: "success", description: "Order status inquiry — provided tracking link and delivery estimate", timeAgo: "12m ago", duration: "5m 40s" },
+  { statusLabel: "Resolved", statusVariant: "success", description: "Account access issue — reset password after failed login attempts", timeAgo: "45m ago", duration: "9m 22s" },
+  { statusLabel: "Escalated", statusVariant: "critical", description: "Billing dispute escalated to Tier 2 for manual review", timeAgo: "1h ago", duration: "11m 08s" },
+  { statusLabel: "Resolved", statusVariant: "success", description: "Subscription renewal question — confirmed upcoming billing date", timeAgo: "3h ago", duration: "6m 15s" },
+];
+const TODAY_CONTACT_HISTORY: ContactHistoryEntry[] = buildContactHistoryFromCustomers(
+  TODAY_CONTACT_HISTORY_CUSTOMER_INDEXES,
+  TODAY_CONTACT_HISTORY_TEMPLATES,
+  "ch-today"
+);
+
+// Fixed customer indexes + content templates for the 5 extra rows that
+// appear once "Last 72 Hours" is selected (on top of "Last 48 Hours"'s own
+// today+yesterday rows) — deterministic (not `Math.random()`), matching
+// the rest of this file's dummy-data convention. Names/case IDs come from
+// the real `CREATE_NEW_CUSTOMERS` records at these indexes; only the
+// description/status/timing are authored here. `timeAgo` is capped at
+// "2d ago" (hour 49-72 of the window: today=hours 0-24, yesterday=hours
+// 24-48, this batch=hours 48-72) so nothing in "Last 72 Hours" reads as
+// older than its own label.
+const EXTENDED_CONTACT_HISTORY_CUSTOMER_INDEXES = [5, 12, 19, 26, 33];
+const EXTENDED_CONTACT_HISTORY_TEMPLATES: ContactHistoryTemplate[] = [
   { statusLabel: "Resolved", statusVariant: "success", description: "Password reset — identity verified via KBA, access restored", timeAgo: "1d ago", duration: "7m 40s" },
   { statusLabel: "Resolved", statusVariant: "success", description: "Billing question — walked through recent charges, no refund needed", timeAgo: "1d ago", duration: "5m 18s" },
-  { statusLabel: "Transferred", statusVariant: "warning", description: "Product setup issue escalated to Tier 2 for configuration support", timeAgo: "2d ago", duration: "14m 05s" },
-  { statusLabel: "Resolved", statusVariant: "success", description: "Subscription cancellation request — retention offer accepted", timeAgo: "3d ago", duration: "10m 52s" },
-  { statusLabel: "Resolved", statusVariant: "success", description: "Shipping delay follow-up — updated delivery window provided", timeAgo: "4d ago", duration: "4m 27s" },
+  { statusLabel: "Escalated", statusVariant: "critical", description: "Product setup issue escalated to Tier 2 for configuration support", timeAgo: "2d ago", duration: "14m 05s" },
+  { statusLabel: "Resolved", statusVariant: "success", description: "Subscription cancellation request — retention offer accepted", timeAgo: "2d ago", duration: "10m 52s" },
+  { statusLabel: "Resolved", statusVariant: "success", description: "Shipping delay follow-up — updated delivery window provided", timeAgo: "2d ago", duration: "4m 27s" },
+];
+const EXTENDED_CONTACT_HISTORY: ContactHistoryEntry[] = buildContactHistoryFromCustomers(
+  EXTENDED_CONTACT_HISTORY_CUSTOMER_INDEXES,
+  EXTENDED_CONTACT_HISTORY_TEMPLATES,
+  "ch-ext"
+);
+
+/** Contact History's own date filter — deliberately a separate type/value
+ *  set from the shared `DateFilterValue` (Today/Yesterday/Last 7 days/
+ *  Custom) the Productivity/Performance cards' `DateFilterChip` uses: this
+ *  card only ever wants 3 cumulative, "as of now" windows, no custom range
+ *  picker. Reusing `DateFilterValue` here would either force those other
+ *  two cards' filter to change too (they weren't asked to) or require
+ *  awkwardly repurposing "yesterday"/"last7" values to mean something else
+ *  than their names say. */
+type ContactHistoryDateFilterValue = "today" | "last48h" | "last72h";
+
+const CONTACT_HISTORY_DATE_FILTER_OPTIONS: { value: ContactHistoryDateFilterValue; label: string }[] = [
+  { value: "today",   label: "Today" },
+  { value: "last48h", label: "Last 48 Hours" },
+  { value: "last72h", label: "Last 72 Hours" },
 ];
 
-const EXTENDED_CONTACT_HISTORY: ContactHistoryEntry[] = EXTENDED_CONTACT_HISTORY_CUSTOMER_INDEXES.map((customerIndex, i) => {
-  const customer = CREATE_NEW_CUSTOMERS[customerIndex];
-  const channelType = contactHistoryChannelType(customer.channels);
-  return {
-    id: `ch-ext-${customer.id}`,
-    name: customer.name,
-    // `customer.customerId` is already "CST-…"-prefixed — use it as-is
-    // rather than re-prefixing into "CST-CST-…".
-    caseId: customer.customerId,
-    channelType,
-    channelLabel: CONTACT_HISTORY_CHANNEL_LABEL[channelType],
-    redial: channelType === "voice",
-    ...EXTENDED_CONTACT_HISTORY_TEMPLATES[i],
-  };
-});
-
-const CONTACT_HISTORY_BY_RANGE: Record<DateFilterValue, ContactHistoryEntry[]> = {
-  today: [],
-  yesterday: CONTACT_HISTORY,
-  last7: [...CONTACT_HISTORY, ...EXTENDED_CONTACT_HISTORY],
-  custom: [],
+/* Each range is cumulative (a superset of the one before it) — "Last 48
+   Hours" is today's rows plus yesterday's, "Last 72 Hours" adds the day
+   before that on top — rather than each range being its own disjoint
+   bucket the way the old Today/Yesterday/Last 7 days setup was (selecting
+   "Last 7 days" there dropped today's own rows entirely, which read as a
+   bug once the range names started actually promising "the last N hours"
+   instead of a single day or a disjoint window). */
+const CONTACT_HISTORY_BY_RANGE: Record<ContactHistoryDateFilterValue, ContactHistoryEntry[]> = {
+  today: TODAY_CONTACT_HISTORY,
+  last48h: [...TODAY_CONTACT_HISTORY, ...CONTACT_HISTORY],
+  last72h: [...TODAY_CONTACT_HISTORY, ...CONTACT_HISTORY, ...EXTENDED_CONTACT_HISTORY],
 };
 
+/* Same trigger/popover chrome as `DateFilterChip` above (filterChipVariants
+   "default" trigger, RadioGroup popover) but for `ContactHistoryDateFilterValue`
+   specifically and with no "Custom" branch/DateRangePicker — kept as its own
+   small component rather than genericizing `DateFilterChip` itself, since
+   the two have different value sets and this one is intentionally simpler
+   (no custom-range case to handle). */
+function ContactHistoryDateFilterChip({ onValueChange }: { onValueChange?: (value: ContactHistoryDateFilterValue) => void }) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState<ContactHistoryDateFilterValue>("today");
+
+  const selectedLabel = CONTACT_HISTORY_DATE_FILTER_OPTIONS.find((o) => o.value === value)?.label ?? "";
+
+  const handleValueChange = (v: ContactHistoryDateFilterValue) => {
+    setValue(v);
+    onValueChange?.(v);
+  };
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      placement="bottom"
+      content={
+        <div className="flex flex-col gap-3 p-3 w-[260px]">
+          <RadioGroup value={value} onValueChange={(v) => handleValueChange(v as ContactHistoryDateFilterValue)}>
+            {CONTACT_HISTORY_DATE_FILTER_OPTIONS.map((option) => (
+              <RadioGroupItem key={option.value} value={option.value} label={option.label} />
+            ))}
+          </RadioGroup>
+        </div>
+      }
+    >
+      <button type="button" className={cn(filterChipVariants({ variant: "default" }), "rounded-lyra-md")}>
+        <span className="inline-flex items-baseline gap-1">
+          <span className="lyra-body-md-emphasis whitespace-nowrap">Date:</span>
+          <span className="lyra-body-md truncate">{selectedLabel}</span>
+        </span>
+        <ChevronDown className={cn("h-3.5 w-3.5 flex-shrink-0 transition-transform", open && "rotate-180")} strokeWidth={1.5} aria-hidden="true" />
+      </button>
+    </Popover>
+  );
+}
+
 function ContactHistoryCard({ onRedial }: { onRedial?: (entry: ContactHistoryEntry) => void }) {
-  const [dateFilter, setDateFilter] = useState<DateFilterValue>("today");
+  const [dateFilter, setDateFilter] = useState<ContactHistoryDateFilterValue>("today");
+  const [searchQuery, setSearchQuery] = useState("");
   const entries = CONTACT_HISTORY_BY_RANGE[dateFilter];
+
+  // Filters the already date-ranged `entries` down to whatever matches the
+  // search box — name, case ID, channel, or the one-line case summary, so
+  // a query like "billing" or "CST-30164" both find their row. Case-
+  // insensitive substring match, same convention as every other quick
+  // search in this app (e.g. `DesktopDesignsPage`'s table toolbar).
+  const filteredEntries = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return entries;
+    return entries.filter((entry) =>
+      [entry.name, entry.description, entry.caseId, entry.channelLabel].some((field) =>
+        field.toLowerCase().includes(query)
+      )
+    );
+  }, [entries, searchQuery]);
 
   return (
     <DashboardCard
       variant="neutral-subtle"
       headerTitle="Contact History"
-      headerActions={<DateFilterChip onValueChange={setDateFilter} />}
+      headerIcon={<Icon icon={History} size="md" background="info" shape="rounded" decorative />}
+      headerActions={
+        <>
+          <SearchInput
+            value={searchQuery}
+            onValueChange={setSearchQuery}
+            placeholder="Search contact history"
+            size="sm"
+            className="flex-1 min-w-[240px] max-w-[320px]"
+          />
+          <ContactHistoryDateFilterChip onValueChange={setDateFilter} />
+        </>
+      }
     >
-      {entries.length === 0 ? (
+      {filteredEntries.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
           <Inbox className="h-6 w-6 text-lyra-fg-secondary" strokeWidth={1.5} aria-hidden="true" />
-          <span className="lyra-body-md text-lyra-fg-secondary">Nothing to Display</span>
+          <span className="lyra-body-md text-lyra-fg-secondary">
+            {entries.length === 0 ? "Nothing to Display" : "No matching contacts"}
+          </span>
         </div>
       ) : (
         <div className="flex flex-col">
-          {entries.map((entry, i) => {
+          {filteredEntries.map((entry, i) => {
             const ChannelIcon = CONTACT_HISTORY_CHANNEL_ICON[entry.channelType];
             return (
               <div
                 key={entry.id}
                 className={cn(
-                  "flex items-start justify-between gap-4 px-4 py-4",
+                  "flex items-start justify-between gap-4 px-4 py-4 transition-colors hover:bg-lyra-state-hover",
                   i > 0 && "border-t border-lyra-border-subtle"
                 )}
               >
                 <div className="flex flex-col gap-1.5 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="lyra-body-md-emphasis text-lyra-fg-default">{entry.name}</span>
-                    <Tag label={entry.statusLabel} variant={entry.statusVariant} />
+                    {/* Status badge — dot + label, matching the reference
+                        screenshot's status-dropdown rows (colored dot,
+                        plain text, no pill background) rather than Tag's
+                        bordered/tinted pill: critical=red (Escalated),
+                        info=blue (In Progress), success=green (Resolved),
+                        neutral=gray (New). */}
+                    <span className="inline-flex items-center gap-1.5">
+                      <Badge shape="circle" dot size="sm" variant={entry.statusVariant} aria-hidden="true" />
+                      <span className="lyra-body-sm-emphasis text-lyra-fg-default">{entry.statusLabel}</span>
+                    </span>
                     {entry.redial && (
                       <Button variant="outline" size="sm" onClick={() => onRedial?.(entry)}>
                         <PhoneOutgoing className="h-3.5 w-3.5" strokeWidth={1.5} />
@@ -1193,12 +1420,19 @@ function ContactHistoryCard({ onRedial }: { onRedial?: (entry: ContactHistoryEnt
                   <span className="lyra-body-md text-lyra-fg-secondary">{entry.description}</span>
                   <span className="lyra-body-sm text-lyra-fg-secondary">{entry.caseId}</span>
                 </div>
-                <div className="flex flex-col items-end gap-1 shrink-0">
-                  <span className="inline-flex items-center gap-1.5 lyra-body-sm text-lyra-fg-secondary whitespace-nowrap">
-                    <ChannelIcon className="h-4 w-4" strokeWidth={1.5} />
-                    {entry.channelLabel} · {entry.timeAgo}
-                  </span>
-                  <span className="lyra-body-md-emphasis tabular-nums text-lyra-fg-default whitespace-nowrap">{entry.duration}</span>
+                <div className="flex flex-col items-end gap-1.5 shrink-0">
+                  {/* Channel-type pill — "purple"/"teal"/"pink" per
+                      CONTACT_HISTORY_CHANNEL_TAG_VARIANT (Voice/Chat/
+                      Email), matching the same three `lyra-accent-*`
+                      hues CONTRIBUTING.md's "Channel type colors"
+                      convention documents, not a one-off tint. */}
+                  <Tag
+                    label={entry.channelLabel}
+                    variant={CONTACT_HISTORY_CHANNEL_TAG_VARIANT[entry.channelType]}
+                    shape="pill"
+                    icon={<ChannelIcon strokeWidth={1.5} />}
+                  />
+                  <span className="lyra-body-sm text-lyra-fg-secondary whitespace-nowrap">{entry.timeAgo}</span>
                 </div>
               </div>
             );
@@ -1311,7 +1545,7 @@ function InteractionsTable({ interactions }: { interactions: ContactInteraction[
         {sorted.map((interaction) => (
           <TableRow key={interaction.id}>
             <TableCell className="w-[48px] shrink-0">
-              <span className="relative inline-flex h-4 w-4 items-center justify-center text-lyra-fg-secondary">
+              <span className={cn("relative inline-flex h-4 w-4 items-center justify-center", CHANNEL_TYPE_ICON_COLOR_CLASS[interaction.type])}>
                 {interaction.type === "email" ? (
                   <Mail className="h-4 w-4" strokeWidth={1.5} />
                 ) : interaction.type === "voice" ? (
@@ -1351,6 +1585,391 @@ function InteractionsTable({ interactions }: { interactions: ContactInteraction[
         ))}
       </TableBody>
     </Table>
+  );
+}
+
+/* ── InteractionTranscript ──
+   The conversation-transcript body for an active interaction's detail page,
+   shown below the ChannelTab TabList (replaces the empty placeholder div
+   that used to sit there — see the `activeInteraction` branch above). Shows
+   one fixed mock conversation (Sarah Chen ↔ John Smith, case
+   CTX-20250722-08841) for every active interaction rather than a real
+   per-interaction transcript — this is a UI prototype of the transcript
+   layout itself, not a case-data integration.
+
+   Deliberately hand-built instead of composed from lyra-ui's
+   `ConversationMessage`: that component's "agent" variant doesn't produce
+   the white-bordered customer bubble the reference screenshot shows (no
+   variant maps to that background), and its avatar sits beside the bubble
+   rather than below it next to the tag row — both would require changing
+   `ConversationMessage` itself, which is off the table for this feature
+   ("do not update the components in lyra-ui until i say"). The removable
+   Technical/Urgent/Billing pills still reuse `Tag` unmodified — it already
+   supports `onRemove` plus the purple/critical/default variants used below,
+   no lyra-ui changes needed there. */
+
+interface TranscriptTag {
+  id: string;
+  label: string;
+  variant: TagVariant;
+}
+
+interface TranscriptMessage {
+  id: string;
+  sender: "customer" | "agent";
+  name: string;
+  initials: string;
+  timestamp: string;
+  text: string;
+  tags?: TranscriptTag[];
+}
+
+const TRANSCRIPT_CASE_ID = "CTX-20250722-08841";
+const TRANSCRIPT_CASE_DATE = "July 22, 2025";
+
+const TRANSCRIPT_MESSAGES: TranscriptMessage[] = [
+  {
+    id: "m1",
+    sender: "customer",
+    name: "Sarah Chen",
+    initials: "SC",
+    timestamp: "9:14 AM",
+    text: "Hi, I'm having trouble with my recent invoice — it looks like I was charged twice for the same service.",
+    tags: [
+      { id: "m1-complain", label: "Complain", variant: "critical" },
+      { id: "m1-help", label: "Help", variant: "info" },
+    ],
+  },
+  {
+    id: "m2",
+    sender: "agent",
+    name: "John Smith",
+    initials: "JS",
+    timestamp: "9:15 AM",
+    text: "Hi! Thanks for reaching out. I'm sorry to hear that — let me pull up your account right away.",
+  },
+  {
+    id: "m3",
+    sender: "agent",
+    name: "John Smith",
+    initials: "JS",
+    timestamp: "9:17 AM",
+    text: "I can see the duplicate charge from July 18th. I'll submit a refund request for the second charge now.",
+  },
+  {
+    id: "m4",
+    sender: "customer",
+    name: "Sarah Chen",
+    initials: "SC",
+    timestamp: "9:18 AM",
+    text: "Thank you! How long will it take?",
+    tags: [
+      { id: "m4-praise", label: "Praise", variant: "success" },
+      { id: "m4-help", label: "Help", variant: "info" },
+    ],
+  },
+  {
+    id: "m5",
+    sender: "agent",
+    name: "John Smith",
+    initials: "JS",
+    timestamp: "9:20 AM",
+    text: "Refunds typically appear within 3–5 business days. You'll also receive a confirmation email shortly.",
+  },
+  {
+    id: "m6",
+    sender: "customer",
+    name: "Sarah Chen",
+    initials: "SC",
+    timestamp: "9:22 AM",
+    text: "Great, sounds good. One more thing — can I also update the billing email on file?",
+  },
+];
+
+// Quick-add options offered from a message's hover "Tags" action — matches
+// the app's real tag vocabulary (Complain/Help/Praise/Share), not an
+// invented set, so a picked tag reads the same as the ones seeded on m1/m4.
+// Deliberately not purple/teal/pink — CONTRIBUTING.md reserves those three
+// Tag variants for channel-type coloring specifically.
+const QUICK_TAG_OPTIONS: Omit<TranscriptTag, "id">[] = [
+  { label: "Complain", variant: "critical" },
+  { label: "Help", variant: "info" },
+  { label: "Praise", variant: "success" },
+  { label: "Share", variant: "default" },
+];
+
+function InteractionTranscript() {
+  // Local, per-message tag state — removing/adding a tag on one message
+  // shouldn't touch any other message's tags, so this isn't a flat array.
+  const [messages, setMessages] = useState<TranscriptMessage[]>(TRANSCRIPT_MESSAGES);
+  // Which message's "Add tag" popover is open — at most one at a time.
+  const [tagPickerOpenId, setTagPickerOpenId] = useState<string | null>(null);
+
+  const removeTag = (messageId: string, tagId: string) => {
+    setMessages((prev) =>
+      prev.map((m) => (m.id === messageId ? { ...m, tags: m.tags?.filter((t) => t.id !== tagId) } : m))
+    );
+  };
+
+  const addTag = (messageId: string, option: Omit<TranscriptTag, "id">) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId
+          ? { ...m, tags: [...(m.tags ?? []), { ...option, id: `${messageId}-${option.label.toLowerCase()}` }] }
+          : m
+      )
+    );
+    // Deliberately doesn't close the popover — picking a tag is meant to be
+    // a quick multi-select (add Complain, then Help, then close when done),
+    // not a one-shot pick. Closing is explicit: the header's close button,
+    // or clicking off the popover (Radix's default outside-click handling
+    // on `PopoverPrimitive.Content`, unchanged here).
+  };
+
+  const copyMessage = (text: string) => {
+    navigator.clipboard?.writeText(text).catch(() => {});
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="w-full max-w-[1200px] mx-auto px-6 py-4">
+        {/* Case id / date separator */}
+        <div className="flex items-center gap-3 py-2">
+          <div className="h-px flex-1 bg-lyra-border-subtle" />
+          <button
+            type="button"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-lyra-border-subtle px-3 py-1.5 lyra-body-sm text-lyra-fg-secondary transition-colors hover:bg-lyra-state-hover"
+          >
+            <span aria-hidden="true">#</span>
+            <span className="font-mono">{TRANSCRIPT_CASE_ID}</span>
+            <span aria-hidden="true">·</span>
+            <span>{TRANSCRIPT_CASE_DATE}</span>
+            <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
+          </button>
+          <div className="h-px flex-1 bg-lyra-border-subtle" />
+        </div>
+
+        {/* Messages */}
+        <div className="flex flex-col gap-5 py-4">
+          {messages.map((message) => {
+            const isCustomer = message.sender === "customer";
+            return (
+              <div key={message.id} className={cn("flex flex-col", isCustomer ? "items-start" : "items-end")}>
+                <div className={cn("flex max-w-[70%] items-start gap-2", isCustomer ? "flex-row" : "flex-row-reverse")}>
+                  <span
+                    className={cn(
+                      "flex h-7 w-7 shrink-0 items-center justify-center rounded-full lyra-body-sm-emphasis",
+                      isCustomer
+                        ? "bg-lyra-accent-green-soft text-lyra-accent-green-strong"
+                        : "bg-lyra-bg-primary text-lyra-fg-on-primary"
+                    )}
+                    aria-hidden="true"
+                  >
+                    {message.initials}
+                  </span>
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <span className={cn("lyra-body-sm text-lyra-fg-secondary px-1", !isCustomer && "text-right")}>
+                      {message.name}
+                    </span>
+                    <div
+                      className={cn(
+                        "group flex items-end gap-1.5",
+                        isCustomer ? "flex-row" : "flex-row-reverse"
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "rounded-lyra-lg px-4 py-3 border border-transparent",
+                          isCustomer ? "rounded-tl-none bg-lyra-state-hover" : "rounded-tr-none"
+                        )}
+                        style={!isCustomer ? { backgroundColor: "var(--lyra-color-bg-conversation-user)" } : undefined}
+                      >
+                        <p className="lyra-body-md text-lyra-fg-default">{message.text}</p>
+                        <span className="mt-2 block lyra-body-sm text-lyra-fg-secondary">{message.timestamp}</span>
+                      </div>
+                      {/* Copy / Add tag — hidden until the bubble row is
+                          hovered, sitting just outside the bubble (right for
+                          customer bubbles, left for agent bubbles), bottom-
+                          aligned with it rather than overlapping it. */}
+                      <div
+                        className={cn(
+                          "mb-0.5 flex shrink-0 items-center gap-0.5 rounded-lyra-md border border-lyra-border-subtle bg-lyra-bg-surface-base p-0.5 opacity-0 shadow-sm transition-opacity group-hover:opacity-100",
+                          // The "Add tag" popover renders in a portal, so
+                          // moving the pointer into it isn't hovering this
+                          // row anymore — group-hover alone would fade the
+                          // toolbar out from under an open popover. Force it
+                          // visible whenever this message's picker is open.
+                          tagPickerOpenId === message.id && "opacity-100"
+                        )}
+                      >
+                        <ActionIconButton size="sm" title="Copy message" onClick={() => copyMessage(message.text)}>
+                          <Copy className="h-3.5 w-3.5" strokeWidth={1.5} />
+                        </ActionIconButton>
+                        <Popover
+                          open={tagPickerOpenId === message.id}
+                          onOpenChange={(open) => setTagPickerOpenId(open ? message.id : null)}
+                          placement="bottom"
+                          header={
+                            <PanelHeader
+                              title="Add tag"
+                              bordered={false}
+                              className="px-5 pb-0"
+                              onClose={() => setTagPickerOpenId(null)}
+                            />
+                          }
+                          content={
+                            <div className="flex flex-col gap-1 py-2">
+                              {QUICK_TAG_OPTIONS.filter(
+                                (opt) => !message.tags?.some((t) => t.label === opt.label)
+                              ).map((opt) => (
+                                <button
+                                  key={opt.label}
+                                  type="button"
+                                  className="group flex items-center rounded-lyra-sm px-1 py-1 text-left"
+                                  onClick={() => addTag(message.id, opt)}
+                                >
+                                  {/* Hover feedback lives on the tag pill's
+                                      own color (darkens slightly) instead of
+                                      a gray row background behind it — the
+                                      pill already carries the variant's
+                                      color, so that's what should visibly
+                                      react to hovering it. `brightness`
+                                      works regardless of which variant color
+                                      is in play, no per-variant hover class
+                                      needed. */}
+                                  <Tag
+                                    label={opt.label}
+                                    variant={opt.variant}
+                                    shape="pill"
+                                    className="transition-[filter] group-hover:brightness-95 dark:group-hover:brightness-125"
+                                  />
+                                </button>
+                              ))}
+                              {QUICK_TAG_OPTIONS.every((opt) =>
+                                message.tags?.some((t) => t.label === opt.label)
+                              ) && (
+                                <span className="px-1 py-1 lyra-body-sm text-lyra-fg-secondary">
+                                  All tags added
+                                </span>
+                              )}
+                            </div>
+                          }
+                        >
+                          <ActionIconButton size="sm" title="Add tag">
+                            <Tags className="h-3.5 w-3.5" strokeWidth={1.5} />
+                          </ActionIconButton>
+                        </Popover>
+                      </div>
+                    </div>
+                    {message.tags && message.tags.length > 0 && (
+                      <div
+                        className={cn(
+                          "mt-1 flex flex-wrap items-center gap-2",
+                          isCustomer ? "flex-row" : "flex-row-reverse"
+                        )}
+                      >
+                        {message.tags.map((tag) => (
+                          <Tag
+                            key={tag.id}
+                            label={tag.label}
+                            variant={tag.variant}
+                            shape="pill"
+                            onRemove={() => removeTag(message.id, tag.id)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── InteractionComposer ──
+   The message-input bar fixed to the bottom of an active interaction's
+   detail page — a sibling rendered right after `InteractionTranscript`
+   rather than living inside it, so it's a `shrink-0` row in the same flex
+   column instead of scrolling away with the transcript above it (which is
+   the `flex-1 overflow-y-auto` element doing all the scrolling).
+
+   Composed entirely from existing lyra-ui exports (`Textarea`, `Button`,
+   `ActionIconButton`) — no lyra-ui changes. The "Send ▾" control is hand-
+   built from two adjacent `Button`s (rounded-r-none / rounded-l-none, a
+   hairline divider between) since lyra-ui has no dedicated split-button
+   component; same reasoning as everywhere else in this file that composes
+   existing atoms rather than waiting on a new lyra-ui primitive. */
+function InteractionComposer() {
+  const [message, setMessage] = useState("");
+  const canSend = message.trim().length > 0;
+
+  const handleSend = () => {
+    if (!canSend) return;
+    // No real send pipeline yet (the transcript above is fixed mock data,
+    // not a live conversation) — clearing the field is the one honest
+    // "sent" signal available without pretending this posts anywhere.
+    setMessage("");
+  };
+
+  return (
+    <div className="shrink-0 border-t border-lyra-border-subtle bg-lyra-bg-surface-base px-6 py-4">
+      <div className="w-full max-w-[1200px] mx-auto">
+        <Textarea
+          label="Chat with Customer"
+          placeholder="Type a message... or # for quick replies"
+          rows={3}
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+        />
+        <div className="mt-2 flex items-center justify-between">
+          <div className="flex items-center gap-0.5">
+            <ActionIconButton size="sm" title="Attach file">
+              <Paperclip className="h-4 w-4" strokeWidth={1.5} />
+            </ActionIconButton>
+            <ActionIconButton size="sm" title="Bold">
+              <Bold className="h-4 w-4" strokeWidth={1.5} />
+            </ActionIconButton>
+            <ActionIconButton size="sm" title="Italic">
+              <Italic className="h-4 w-4" strokeWidth={1.5} />
+            </ActionIconButton>
+            <ActionIconButton size="sm" title="Emoji">
+              <Smile className="h-4 w-4" strokeWidth={1.5} />
+            </ActionIconButton>
+            <ActionIconButton size="sm" title="Quick replies">
+              <Zap className="h-4 w-4" strokeWidth={1.5} />
+            </ActionIconButton>
+            <ActionIconButton size="sm" title="Templates">
+              <FileText className="h-4 w-4" strokeWidth={1.5} />
+            </ActionIconButton>
+          </div>
+          <div className="inline-flex items-center">
+            <Button
+              variant="default"
+              size="lg"
+              className="gap-1.5 rounded-r-none"
+              disabled={!canSend}
+              onClick={handleSend}
+            >
+              <Send className="h-4 w-4" strokeWidth={1.5} />
+              Send
+            </Button>
+            <Button
+              variant="default"
+              size="icon-lg"
+              className="rounded-l-none border-l border-white/25"
+              disabled={!canSend}
+              title="More send options"
+            >
+              <ChevronDown className="h-4 w-4" strokeWidth={1.5} />
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1872,9 +2491,29 @@ export function AgentNextGenPage({
      (namespaced "redial:" to stay distinct from quick-dial/outbound ids) and
      carrying the customer's real name, since — unlike a quick-dialed number —
      Contact History always has one on hand. Also expands the nav, same
-     reasoning as handleStartCall/handleQuickDial above. */
+     reasoning as handleStartCall/handleQuickDial above.
+
+     Prefers `entry.customerId` (the real `CREATE_NEW_CUSTOMERS` id) over the
+     synthetic `redial:` one whenever it's on hand — this was a real, shipped
+     bug: `useOutboundAddButton`'s `getHeaderAction` looks up an interaction's
+     own id in `outboundConfig.groups` to build its "+" (Add Channel) button,
+     and `CreateNew`'s `launchRequest` effect does the same lookup again when
+     a channel is actually picked from that button's flyout. A synthetic
+     `redial:ch1`-style id never matches any real contact id, so the button
+     still rendered (its own fallback, per `getHeaderAction`'s doc comment,
+     covers exactly this) but clicking a channel in it silently did nothing —
+     `CreateNew`'s effect found no matching contact and just called
+     `onLaunchRequestHandled()` without ever opening the call-setup screen.
+     Using the real id makes a redialed card id-identical to one started
+     from the Outbound picker for the same customer, so "Add Channel" (and,
+     as a side effect, redialing the same customer who already has a card
+     open elsewhere) both resolve correctly. Only the 5 hand-authored
+     `CONTACT_HISTORY` rows (fictional names/case IDs, no backing
+     `CREATE_NEW_CUSTOMERS` record) still fall back to the synthetic id —
+     same pre-existing limitation `handleQuickDial` already has for numbers
+     with no contact record at all, not something new. */
   const handleRedial = (entry: ContactHistoryEntry) => {
-    const id = `redial:${entry.id}`;
+    const id = entry.customerId ?? `redial:${entry.id}`;
     // No stored phone number on ContactHistoryEntry — this channel's
     // ChannelTab just shows icon + "Voice" with no address, same as any
     // other channel with no addressLabel.
@@ -1906,8 +2545,17 @@ export function AgentNextGenPage({
      to the same two handlers (see the `activeInteraction` block below), so
      dismissing from a tab behaves identically to dismissing from the card. */
   const handleDismissInteraction = (id: string) => {
-    setInteractions((prev) => prev.filter((interaction) => interaction.id !== id));
-    setActiveInteractionId((current) => (current === id ? null : current));
+    // Dismissing the active assignment shouldn't strand the agent on an
+    // empty dashboard when there's other open work waiting — hand "active"
+    // to whichever assignment now sits at the top of the LeftNav list
+    // (`interactions` renders top-down, see the `header` block below)
+    // instead of clearing to `null`. Only clears to `null` (back to the
+    // dashboard) once every assignment is gone. Computed from the same
+    // filtered list `setInteractions` below produces, so the two state
+    // updates can never disagree about what's actually left.
+    const remaining = interactions.filter((interaction) => interaction.id !== id);
+    setInteractions(remaining);
+    setActiveInteractionId((current) => (current === id ? remaining[0]?.id ?? null : current));
   };
 
   const handleDismissChannel = (id: string, channel: Pick<InteractionChannel, "id" | "type">) => {
@@ -2619,7 +3267,7 @@ export function AgentNextGenPage({
                       (Unassign & Dismiss/Consult/Transfer/etc.), not just a
                       way to switch between multiple. */}
                   {showPageHeader && activeInteraction.channels.length > 0 && (
-                    <TabList className="px-6 bg-lyra-bg-surface-base shrink-0 lyra-channel-tab-list-wrap">
+                    <TabList className="px-6 bg-lyra-bg-surface-base shrink-0" overflowMenu>
                       {activeInteraction.channels.map((c) => {
                         const key = c.id ?? c.type;
                         return (
@@ -2640,7 +3288,8 @@ export function AgentNextGenPage({
                       })}
                     </TabList>
                   )}
-                  <div className="flex-1 overflow-y-auto" />
+                  <InteractionTranscript />
+                  <InteractionComposer />
                 </>
               ) : (
                 <>
@@ -2670,11 +3319,81 @@ export function AgentNextGenPage({
               <div className="relative flex flex-1 overflow-hidden">
                 <div className="flex flex-1 flex-col min-w-0 overflow-y-auto px-6 py-6">
                   <div className="w-full max-w-[1200px] mx-auto lyra-container-grid-wrap">
-                    {/* ── Greeting ── */}
-                    <h1 className="lyra-heading-2xl text-lyra-fg-default">
-                      Good {getGreetingPeriod()}, {CURRENT_AGENT_FIRST_NAME}
-                    </h1>
-                    <p className="mt-1 lyra-body-md text-lyra-fg-secondary">Below is your team's queue for the day:</p>
+                    {/* ── Greeting header toolbar ──
+                        Title/subtitle on the left, action buttons pinned to
+                        the right — same "title block + trailing actions row"
+                        shape as `DashboardCard`/`ContainerHeader`'s own
+                        `headerActions` slot elsewhere in this file, just
+                        hand-built here rather than composed from those
+                        (they're card headers, not a full-bleed page-level
+                        toolbar; `PageHeader` renders its title at
+                        `lyra-heading-lg`, a step down from this greeting's
+                        intentionally larger `lyra-heading-2xl`, so reusing
+                        it would shrink the greeting rather than just
+                        toolbar-ing the actions). */}
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h1 className="lyra-heading-2xl text-lyra-fg-default">
+                          Good {getGreetingPeriod()}, {CURRENT_AGENT_FIRST_NAME}
+                        </h1>
+                        <p className="mt-1 lyra-body-md text-lyra-fg-secondary">Below is your team's queue for the day:</p>
+                      </div>
+                      {/* Actions toolbar — `inline-flex` (not a bare
+                          fragment) so it shrinks to its own content width
+                          instead of stretching, same reasoning as
+                          `ContainerHeader`'s own `actions` wrapper. This
+                          matters more than usual here: `CreateNew`'s root is
+                          unconditionally `<span className="flex w-full
+                          justify-center">` (see create-new.tsx's `trigger`
+                          doc comment — built so its *expanded* button fills
+                          a full-width LeftNav rail/footer). Nested directly
+                          inside a `justify-between` row, that inner `w-full`
+                          still resolves against (and stretches to fill)
+                          whatever space `justify-between` leaves it, and
+                          `justify-center` then centers the actual button
+                          inside that oversized box — the button visibly
+                          floated mid-row instead of hugging the true right
+                          edge (confirmed via devtools: the flex item's own
+                          box was hundreds of pixels wider than the button
+                          it contained). Giving this wrapper `inline-flex`
+                          makes it shrink-to-fit around `CreateNew`, so its
+                          child span's `w-full` resolves against *that*
+                          already-content-sized box instead — a plain,
+                          standard "shrink-to-fit parent around a 100%-width
+                          child" containment, no lyra-ui change needed. Also
+                          the natural place to add more toolbar buttons
+                          later (`gap-2` already spaces them). */}
+                      <div className="inline-flex items-center gap-2 shrink-0">
+                        {/* A second, independent `CreateNew` trigger — same
+                            `outboundConfig`/`handleStartCall`/`handleQuickDial`
+                            as the LeftNav's own "New Outbound" button (see
+                            `pinnedHeader` below), so picking a contact+channel
+                            here starts an interaction exactly the same way.
+                            Deliberately omits `launchRequest`/
+                            `onLaunchRequestHandled`: those wire the *other*
+                            instance to every card's own "+" (Add Channel)
+                            deep-link (`useOutboundAddButton`) — sharing that
+                            same state here would make both instances react
+                            (and try to open) to a single card's "+" click.
+                            `expanded` (not the LeftNav's `navOpen`-driven
+                            value) keeps this one always showing its
+                            icon+label — it isn't inside a collapsible rail,
+                            so there's no "compact" state for it to collapse
+                            into. Already renders as a solid primary button
+                            (`CreateNew`'s own trigger styling — see its
+                            `trigger` doc comment in create-new.tsx), not a
+                            one-off className here. */}
+                        <CreateNew
+                          title="New Outbound"
+                          outbound={{
+                            ...outboundConfig,
+                            onStartCall: handleStartCall,
+                            onQuickDial: handleQuickDial,
+                          }}
+                          expanded
+                        />
+                      </div>
+                    </div>
 
                     {/* ── Queue widgets ──
                         `DashboardQueue` ("cards" variant, its default) —
