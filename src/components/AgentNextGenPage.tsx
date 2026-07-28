@@ -14,12 +14,12 @@ import {
   AgentProfile,
   Container,
   InteriorPanel,
-  CustomerInformationPanel,
-  PanelPinButton,
   PageHeader,
   PanelHeader,
   Button,
   Textarea,
+  Label,
+  Accordion,
   ActionIconButton,
   AiSparkleIcon,
   Tag,
@@ -37,6 +37,7 @@ import {
   SortableTableHead,
   Icon,
   Badge,
+  type BadgeColor,
   SearchInput,
   Separator,
   DonutChart,
@@ -53,6 +54,11 @@ import {
   filterChipVariants,
   Menu,
   Select,
+  Checkbox,
+  DatePicker,
+  EmailInput,
+  PhoneInput,
+  type PhoneValue,
   Tooltip,
   type SelectOption,
   type NavItem,
@@ -822,35 +828,60 @@ function DateFilterChip({ onValueChange }: { onValueChange?: (value: DateFilterV
   };
 
   return (
-    <Popover
-      open={open}
-      onOpenChange={setOpen}
-      placement="bottom"
-      content={
-        <div className="flex flex-col gap-3 p-3 w-[260px]">
-          <RadioGroup value={value} onValueChange={(v) => handleValueChange(v as DateFilterValue)}>
-            {DATE_FILTER_OPTIONS.map((option) => (
-              <RadioGroupItem key={option.value} value={option.value} label={option.label} />
-            ))}
-          </RadioGroup>
-          {value === "custom" && (
-            <DateRangePicker
-              value={customRange}
-              onChange={setCustomRange}
-              placeholder="Select date range"
-            />
-          )}
-        </div>
-      }
-    >
-      <button type="button" className={cn(filterChipVariants({ variant: "default" }), "rounded-lyra-md")}>
-        <span className="inline-flex items-baseline gap-1">
-          <span className="lyra-body-md-emphasis whitespace-nowrap">Date:</span>
-          <span className="lyra-body-md truncate">{selectedLabel}</span>
-        </span>
-        <ChevronDown className={cn("h-3.5 w-3.5 flex-shrink-0 transition-transform", open && "rotate-180")} strokeWidth={1.5} aria-hidden="true" />
-      </button>
-    </Popover>
+    // Tooltip wraps the Popover from the OUTSIDE (not the other way around)
+    // — CONTRIBUTING.md §16 "Portals still bubble through the React tree":
+    // wiring it any other way risks the tooltip re-triggering off hover
+    // inside the popover's own portaled content. `disabled` while `open` is
+    // true keeps the tooltip from competing with the already-open popover
+    // for the same corner of the screen. Mainly earns its keep once the
+    // chip has collapsed to the icon-only kebab below 480px (see
+    // lyra-tokens.css's "Filter chip icon collapse" family) — there's no
+    // visible "Date: Today" label left at that point for a sighted user to
+    // read at a glance, and no accessible name for anyone else without this
+    // (the `aria-label` below covers screen readers either way, but the
+    // visible tooltip matters for sighted mouse users too).
+    <Tooltip content={`Date filter: ${selectedLabel}`} placement="bottom" disabled={open}>
+      <span className="inline-flex">
+        <Popover
+          open={open}
+          onOpenChange={setOpen}
+          placement="bottom"
+          content={
+            <div className="flex flex-col gap-3 p-3 w-[260px]">
+              <RadioGroup value={value} onValueChange={(v) => handleValueChange(v as DateFilterValue)}>
+                {DATE_FILTER_OPTIONS.map((option) => (
+                  <RadioGroupItem key={option.value} value={option.value} label={option.label} />
+                ))}
+              </RadioGroup>
+              {value === "custom" && (
+                <DateRangePicker
+                  value={customRange}
+                  onChange={setCustomRange}
+                  placeholder="Select date range"
+                />
+              )}
+            </div>
+          }
+        >
+          <button
+            type="button"
+            aria-label={open ? "Close date filter" : `Date filter: ${selectedLabel}`}
+            className={cn(filterChipVariants({ variant: "default" }), "rounded-lyra-md lyra-container-header-filter-trigger")}
+          >
+            {/* Full label — hidden below 480px of the header's own width (see
+                lyra-tokens.css's "Filter chip icon collapse" family) in favor
+                of the compact kebab icon below, both wired to this same
+                Popover trigger/open state. */}
+            <span className="lyra-container-header-filter-full inline-flex items-baseline gap-1">
+              <span className="lyra-body-md-emphasis whitespace-nowrap">Date:</span>
+              <span className="lyra-body-md truncate">{selectedLabel}</span>
+            </span>
+            <ChevronDown className={cn("lyra-container-header-filter-full h-3.5 w-3.5 flex-shrink-0 transition-transform", open && "rotate-180")} strokeWidth={1.5} aria-hidden="true" />
+            <MoreVertical className="lyra-container-header-filter-compact h-4 w-4" strokeWidth={1.5} aria-hidden="true" />
+          </button>
+        </Popover>
+      </span>
+    </Tooltip>
   );
 }
 
@@ -891,6 +922,12 @@ function PerformanceBreakdownCard() {
       headerTitle="Productivity"
       headerIcon={<Icon icon={Gauge} size="md" background="info" shape="rounded" decorative />}
       headerActions={<DateFilterChip onValueChange={setDateFilter} />}
+      // No `SearchInput` here to wrap — `actionsWrap` is only turned on so
+      // its container-query boundary exists for `DateFilterChip`'s own
+      // icon-collapse (see lyra-tokens.css's "Filter chip icon collapse"
+      // family, which reuses this same ancestor). The row-wrap half of
+      // `actionsWrap` is a no-op with a single action child either way.
+      headerActionsWrap
     >
       <div className="flex flex-col gap-4 px-4 pb-4">
         {PRODUCTIVITY_STATUS_META.map((meta) => {
@@ -980,6 +1017,8 @@ function PerformanceSummaryCard() {
       headerTitle="Performance"
       headerIcon={<Icon icon={TrendingUp} size="md" background="success" shape="rounded" decorative />}
       headerActions={<DateFilterChip onValueChange={setDateFilter} />}
+      // See PerformanceBreakdownCard's identical `headerActionsWrap` comment.
+      headerActionsWrap
     >
       <div className="flex flex-col gap-3 px-4 pb-4">
         <div className="flex items-center justify-between">
@@ -1315,28 +1354,43 @@ function ContactHistoryDateFilterChip({ onValueChange }: { onValueChange?: (valu
   };
 
   return (
-    <Popover
-      open={open}
-      onOpenChange={setOpen}
-      placement="bottom"
-      content={
-        <div className="flex flex-col gap-3 p-3 w-[260px]">
-          <RadioGroup value={value} onValueChange={(v) => handleValueChange(v as ContactHistoryDateFilterValue)}>
-            {CONTACT_HISTORY_DATE_FILTER_OPTIONS.map((option) => (
-              <RadioGroupItem key={option.value} value={option.value} label={option.label} />
-            ))}
-          </RadioGroup>
-        </div>
-      }
-    >
-      <button type="button" className={cn(filterChipVariants({ variant: "default" }), "rounded-lyra-md")}>
-        <span className="inline-flex items-baseline gap-1">
-          <span className="lyra-body-md-emphasis whitespace-nowrap">Date:</span>
-          <span className="lyra-body-md truncate">{selectedLabel}</span>
-        </span>
-        <ChevronDown className={cn("h-3.5 w-3.5 flex-shrink-0 transition-transform", open && "rotate-180")} strokeWidth={1.5} aria-hidden="true" />
-      </button>
-    </Popover>
+    // See `DateFilterChip`'s identical Tooltip-wraps-Popover composition
+    // above (CONTRIBUTING.md §16) for why this is structured outside-in.
+    <Tooltip content={`Date filter: ${selectedLabel}`} placement="bottom" disabled={open}>
+      <span className="inline-flex">
+        <Popover
+          open={open}
+          onOpenChange={setOpen}
+          placement="bottom"
+          content={
+            <div className="flex flex-col gap-3 p-3 w-[260px]">
+              <RadioGroup value={value} onValueChange={(v) => handleValueChange(v as ContactHistoryDateFilterValue)}>
+                {CONTACT_HISTORY_DATE_FILTER_OPTIONS.map((option) => (
+                  <RadioGroupItem key={option.value} value={option.value} label={option.label} />
+                ))}
+              </RadioGroup>
+            </div>
+          }
+        >
+          <button
+            type="button"
+            aria-label={open ? "Close date filter" : `Date filter: ${selectedLabel}`}
+            className={cn(filterChipVariants({ variant: "default" }), "rounded-lyra-md lyra-container-header-filter-trigger")}
+          >
+            {/* Full label — hidden below 480px of the header's own width (see
+                lyra-tokens.css's "Filter chip icon collapse" family) in favor
+                of the compact kebab icon below, both wired to this same
+                Popover trigger/open state. */}
+            <span className="lyra-container-header-filter-full inline-flex items-baseline gap-1">
+              <span className="lyra-body-md-emphasis whitespace-nowrap">Date:</span>
+              <span className="lyra-body-md truncate">{selectedLabel}</span>
+            </span>
+            <ChevronDown className={cn("lyra-container-header-filter-full h-3.5 w-3.5 flex-shrink-0 transition-transform", open && "rotate-180")} strokeWidth={1.5} aria-hidden="true" />
+            <MoreVertical className="lyra-container-header-filter-compact h-4 w-4" strokeWidth={1.5} aria-hidden="true" />
+          </button>
+        </Popover>
+      </span>
+    </Tooltip>
   );
 }
 
@@ -1365,6 +1419,17 @@ function ContactHistoryCard({ onRedial }: { onRedial?: (entry: ContactHistoryEnt
       variant="neutral-subtle"
       headerTitle="Contact History"
       headerIcon={<Icon icon={History} size="md" background="info" shape="rounded" decorative />}
+      headerActionsWrap
+      // Two real `SearchInput`s, both bound to the same `searchQuery` state
+      // — one lives in `headerActions` (visible ≥480px, inline beside the
+      // date filter), the other in `headerTabs` (visible <480px, its own
+      // full-width row below the title). CSS toggles which one shows (see
+      // lyra-tokens.css's "Search inline/below" family); the date filter
+      // chip stays in `headerActions` either way and never moves — only
+      // search needed room, so search is the only thing that relocates
+      // (confirmed from a screenshot: forcing the whole actions block to
+      // move together, the previous approach, shoved a lone filter chip
+      // onto its own line even on cards with no search box at all).
       headerActions={
         <>
           <SearchInput
@@ -1372,10 +1437,40 @@ function ContactHistoryCard({ onRedial }: { onRedial?: (entry: ContactHistoryEnt
             onValueChange={setSearchQuery}
             placeholder="Search contact history"
             size="sm"
-            className="flex-1 min-w-[240px] max-w-[320px]"
+            className="lyra-container-header-search-inline flex-1 min-w-[240px]"
           />
           <ContactHistoryDateFilterChip onValueChange={setDateFilter} />
         </>
+      }
+      headerTabs={
+        // The `-search-below` toggle class goes on this plain OUTER div,
+        // not on `SearchInput`'s own className — `SearchInput`'s root is
+        // itself `position: relative` and its search icon is positioned
+        // `absolute left-3` against that same box, so padding added
+        // directly to `SearchInput`'s className would shift the padding
+        // edge the icon measures from, throwing the icon out of alignment
+        // with the input's own baked-in `pl-9` text padding. Padding lives
+        // out here instead, where it can't affect that inner math.
+        //
+        // `pt-3` — `ContainerHeader`'s `tabs` slot (which this reuses, see
+        // its own doc comment) drops the header's normal bottom padding to
+        // 0 whenever `tabs` is set, on the assumption its content (usually
+        // a `TabList`) supplies its own visual separation via a `border-b`.
+        // A `SearchInput` has no such border, so without this it sat
+        // flush against the title row above it — confirmed from a
+        // screenshot. Plain static padding, not container-query-gated:
+        // this whole div is already only visible in the narrow state (see
+        // `.lyra-container-header-search-below` in lyra-tokens.css), so
+        // there's no "wide" state where this padding needs to disappear.
+        <div className="lyra-container-header-search-below px-4 pt-3 pb-3">
+          <SearchInput
+            value={searchQuery}
+            onValueChange={setSearchQuery}
+            placeholder="Search contact history"
+            size="sm"
+            className="w-full"
+          />
+        </div>
       }
     >
       {filteredEntries.length === 0 ? (
@@ -1916,7 +2011,19 @@ function InteractionComposer() {
   };
 
   return (
-    <div className="shrink-0 border-t border-lyra-border-subtle bg-lyra-bg-surface-base px-6 py-4">
+    <div className="relative shrink-0 bg-lyra-bg-surface-base px-6 py-4">
+      {/* Soft fade instead of a hard border-top — reads as the transcript
+          scrolling *under* the composer rather than stopping at a line.
+          Positioned outside this div's own box (negative top), so it
+          overlays the last ~32px of the scrollable transcript sitting
+          directly above it (that sibling isn't `overflow-hidden` on itself
+          from the outside, only its own internal scroll is clipped, so an
+          absolutely-positioned overlay from a neighboring box can still
+          paint over it). */}
+      <div
+        className="pointer-events-none absolute inset-x-0 -top-8 h-8 bg-gradient-to-b from-transparent to-lyra-bg-surface-base"
+        aria-hidden="true"
+      />
       <div className="w-full max-w-[1200px] mx-auto">
         <Textarea
           label="Chat with Customer"
@@ -1973,6 +2080,750 @@ function InteractionComposer() {
   );
 }
 
+/* ── CustomerInformationPanelBody ──
+   Body content for the "Customer Information" `InteriorPanel` docked right
+   of an active interaction — a profile block (avatar initials + name +
+   presence),
+   two placeholder tab sections, and a detail-row list, reproducing the
+   reference mockup's layout as placeholder content (real per-tab data isn't
+   wired up yet, same "prototype the shape first" status as the transcript
+   above).
+
+   The mockup's field rows (label left, value right, hairline divider) are
+   lyra-ui's own documented "Label Horizontal With Separator" composition
+   (see Input.stories.tsx) — `Label` (not a plain span) + a value span
+   (`lyra-body-md text-lyra-fg-secondary`) + `Separator`, not literally the
+   `Input` component itself (Input's own `readonly` mode still renders a
+   bordered box, which isn't this shape at all — the horizontal/label-only
+   look lives in this separate story pattern, composed from `Label` +
+   `Separator`, both already lyra-ui exports). Avatar uses initials
+   (`initialsFor`, already used everywhere else in this file) instead of
+   the mockup's photo — no photo source exists for these interactions. */
+
+interface CustomerInfoField {
+  label: string;
+  value: string;
+}
+
+// Content swapped from the earlier agent-metrics mockup to real customer
+// contact/billing fields (per a later reference screenshot) — same
+// Label + Separator row formatting as before. The values themselves used to
+// be one fixed placeholder profile (literally the app owner's own info,
+// "dBauer79"/"david.bauer@nice.com") shown for every interaction regardless
+// of who the actual customer was — confirmed from a screenshot that this
+// read as static/disconnected rather than describing whoever was actually
+// open. Replaced below with `buildCustomerInfoFields`, which derives a
+// profile per interaction instead.
+
+/* Tiny deterministic string hash → stable "random" index. Not
+   cryptographic, just needs to turn a customer's `recordId` (or name, as a
+   fallback) into the same pseudo-random number every time it's hashed, so
+   the same customer always shows the same synthesized address/balance/zip
+   across renders and reopening the panel — same intent as a seeded RNG,
+   without pulling in a dependency for it. */
+function hashSeed(input: string): number {
+  let hash = 0;
+  for (let i = 0; i < input.length; i++) {
+    hash = (hash * 31 + input.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+// There's no real per-customer contact/billing record anywhere in this
+// app's data — `CREATE_NEW_CUSTOMERS` (lyra-ui's shared customer fixture,
+// see the import above) only carries `id`/`name`/`customerId`/`channels`,
+// nothing address- or billing-shaped. These pools exist so the synthesized
+// profile below reads as plausible varied data (different customers land on
+// different cities/streets) rather than everyone getting the exact same
+// invented address with only the house number changing.
+const CUSTOMER_INFO_STREET_NAMES = [
+  "Clinton Heights Ave", "Maple Grove Dr", "Sunset Ridge Ln", "Harbor View Ct",
+  "Cedar Hollow Rd", "Birchwood Ter", "Fieldstone Way", "Willow Creek Blvd",
+];
+const CUSTOMER_INFO_CITY_STATE: { city: string; state: string }[] = [
+  { city: "Columbus", state: "OH" },
+  { city: "Austin", state: "TX" },
+  { city: "Portland", state: "OR" },
+  { city: "Raleigh", state: "NC" },
+  { city: "Denver", state: "CO" },
+  { city: "Tampa", state: "FL" },
+  { city: "Madison", state: "WI" },
+  { city: "Boise", state: "ID" },
+];
+
+/** A plausible (but invented) US phone number, formatted to match this
+ *  panel's own existing style ("+1 614 749 1794") — used only as a fallback
+ *  when the active interaction has no real voice channel address to show
+ *  instead (see `buildCustomerInfoFields` below). */
+function synthesizePhone(seed: number): string {
+  const areaCode = 200 + (seed % 800);
+  const exchange = 100 + (Math.floor(seed / 7) % 900);
+  const line = 1000 + (Math.floor(seed / 13) % 9000);
+  return `+1 ${areaCode} ${exchange} ${line}`;
+}
+
+/** Splits a customer's display name into first/last — shared by
+ *  `buildCustomerInfoFields` (its synthesized email) and the Detail tab's
+ *  "First Name"/"Last Name" fields, so both land on the exact same split
+ *  for the same customer instead of two independently-hand-rolled
+ *  versions of the same logic drifting apart. A name with no space (or no
+ *  name at all) falls back to using the whole/default name as both. */
+function splitCustomerName(customerName: string | undefined): { firstName: string; lastName: string } {
+  const name = customerName ?? "Customer";
+  const [firstName, ...restNameParts] = name.split(" ");
+  const lastName = restNameParts.join(" ") || firstName;
+  return { firstName, lastName };
+}
+
+/** Builds this panel's field list for whichever customer/interaction is
+ *  actually open, instead of one fixed placeholder profile shown for every
+ *  interaction. Prefers real data already on the interaction itself over
+ *  synthesized filler: `recordId` (the same id already shown in the panel's
+ *  own header subhead) becomes "Contact #", and "Phone #"/"Email" read the
+ *  real address a voice/email channel was actually opened on
+ *  (`TrackedChannel.addressLabel`/`value` — see that field's own doc
+ *  comment) when one exists, since that's genuine data particular to this
+ *  interaction, not invented. Everything else (balance, street address,
+ *  city/state/zip) has no real source anywhere in this app's data — see the
+ *  const comment above — so it's deterministically synthesized from
+ *  `recordId` via `hashSeed`, which at least keeps a given customer's
+ *  "invented" details stable across reopens instead of reshuffling every
+ *  render. */
+function buildCustomerInfoFields(
+  customerName: string | undefined,
+  recordId: string,
+  channels: TrackedChannel[]
+): CustomerInfoField[] {
+  const name = customerName ?? "Customer";
+  const { firstName, lastName } = splitCustomerName(customerName);
+  const seed = hashSeed(recordId || name);
+
+  const voiceChannel = channels.find((c) => c.type === "voice");
+  const emailChannel = channels.find((c) => c.type === "email");
+
+  const phone = voiceChannel?.addressLabel ?? voiceChannel?.value ?? synthesizePhone(seed);
+  const email = emailChannel?.value ?? `${firstName.toLowerCase()}.${lastName.toLowerCase()}@example.com`;
+
+  const { city, state } = CUSTOMER_INFO_CITY_STATE[seed % CUSTOMER_INFO_CITY_STATE.length];
+  const street = CUSTOMER_INFO_STREET_NAMES[Math.floor(seed / 7) % CUSTOMER_INFO_STREET_NAMES.length];
+  const houseNumber = 100 + (seed % 900);
+  const zipCode = String(10000 + (seed % 89999)).padStart(5, "0");
+  const balance = (seed % 25000) / 100;
+
+  return [
+    { label: "Phone #", value: phone },
+    { label: "Contact #", value: recordId },
+    { label: "Email", value: email },
+    { label: "Balance", value: balance.toLocaleString("en-US", { style: "currency", currency: "USD" }) },
+    { label: "Address", value: `${houseNumber} ${street}` },
+    { label: "City", value: city },
+    { label: "State", value: state },
+    { label: "Zip Code", value: zipCode },
+  ];
+}
+
+// "Latest Interaction" summary shown on the Overview tab, below the
+// contact/billing field list. Same "no real per-customer data source, so
+// deterministically synthesize one from the customer's own recordId"
+// approach as `buildCustomerInfoFields` above — used to be one fixed
+// summary (gendered pronoun and all: "Walked *her* through the upgrade
+// flow") shown for every interaction regardless of who was actually open,
+// which read just as disconnected as the old fixed contact-fields
+// placeholder did. Pools below are written in third person with no
+// pronouns at all, since the same pool is shared across every customer.
+interface CustomerLatestInteraction {
+  timeAgo: string;
+  channel: string;
+  status: string;
+  statusColor: BadgeColor;
+  summary: string;
+  caseId: string;
+  handledBy: string;
+}
+
+const CUSTOMER_LATEST_INTERACTION_STATUS_POOL: { status: string; color: BadgeColor }[] = [
+  { status: "Resolved", color: "green" },
+  { status: "Escalated", color: "red" },
+  { status: "Pending", color: "orange" },
+];
+
+const CUSTOMER_LATEST_INTERACTION_CHANNEL_POOL = ["Email", "Voice", "Chat", "SMS"];
+
+const CUSTOMER_LATEST_INTERACTION_TIME_AGO_POOL = [
+  "3 days ago", "9 days ago", "2 weeks ago", "3 weeks ago", "1 month ago", "6 weeks ago",
+];
+
+const CUSTOMER_LATEST_INTERACTION_SUMMARY_POOL = [
+  "Asked about upgrading to the Pro tier for additional storage. Walked through the upgrade flow and confirmed the new billing amount.",
+  "Reported trouble accessing the account after a password reset. Verified identity via KBA and confirmed access was restored.",
+  "Requested a copy of the most recent invoice. Located the billing record and sent it over by email.",
+  "Called in to update the account's mailing address. Confirmed the new address and applied the change.",
+  "Flagged a recent charge that looked unfamiliar. Reviewed the transaction history and clarified the charge.",
+  "Wanted to add an additional user seat to the plan. Walked through the add-seat flow and confirmed the updated price.",
+];
+
+/** Deterministic per-customer "Latest Interaction" summary — same
+ *  `hashSeed`-on-`recordId` approach as `buildCustomerInfoFields`, just
+ *  salted with a different suffix so this doesn't land on the exact same
+ *  pool indexes that function's own fields happen to hash to for the same
+ *  customer. `handledBy` reuses the real `OUTBOUND_AGENTS` roster (the
+ *  same agent names already used elsewhere in this app) rather than a
+ *  separate invented-name pool. */
+function buildLatestInteraction(customerName: string | undefined, recordId: string): CustomerLatestInteraction {
+  const seed = hashSeed(`${recordId || customerName || "customer"}-latest-interaction`);
+  const { status, color } = CUSTOMER_LATEST_INTERACTION_STATUS_POOL[seed % CUSTOMER_LATEST_INTERACTION_STATUS_POOL.length];
+  const channel = CUSTOMER_LATEST_INTERACTION_CHANNEL_POOL[Math.floor(seed / 3) % CUSTOMER_LATEST_INTERACTION_CHANNEL_POOL.length];
+  const timeAgo = CUSTOMER_LATEST_INTERACTION_TIME_AGO_POOL[Math.floor(seed / 7) % CUSTOMER_LATEST_INTERACTION_TIME_AGO_POOL.length];
+  const summary = CUSTOMER_LATEST_INTERACTION_SUMMARY_POOL[Math.floor(seed / 11) % CUSTOMER_LATEST_INTERACTION_SUMMARY_POOL.length];
+  const handledByAgent = OUTBOUND_AGENTS[seed % OUTBOUND_AGENTS.length];
+  const caseId = `CASE-${40000 + (seed % 9000)}`;
+
+  return {
+    timeAgo,
+    channel,
+    status,
+    statusColor: color,
+    summary,
+    caseId,
+    handledBy: handledByAgent?.name ?? "Support Team",
+  };
+}
+
+// Placeholder tab set (per reference screenshot). The screenshot itself
+// showed "Interactions" active, but the panel should open on "Overview"
+// (index 0) by default — so `activeTab` below just starts at 0 rather than
+// looking up a specific tab's index.
+const CUSTOMER_PANEL_TABS = ["Overview", "Detail", "Directory", "Interactions", "Tasks", "Notes", "Accounts", "Tickets"];
+
+/** Looks up one of `buildCustomerInfoFields`'s rows by label — lets the
+ *  Detail tab below reuse the exact same Contact #/Balance/Address/City/
+ *  State/Zip values the Overview tab already shows for this customer,
+ *  instead of a second, independently-synthesized set that could disagree
+ *  with it (e.g. a different "invented" balance on each tab for the same
+ *  customer). */
+function getFieldValue(fields: CustomerInfoField[], label: string): string {
+  return fields.find((f) => f.label === label)?.value ?? "";
+}
+
+const CUSTOMER_DETAIL_ACCOUNT_BLOCK_OPTIONS: SelectOption[] = [
+  { value: "none", label: "None" },
+  { value: "collections", label: "Collections" },
+  { value: "fraud-review", label: "Fraud Review" },
+  { value: "credit-hold", label: "Credit Hold" },
+];
+
+/* ── CustomerDetailTabContent ──
+   The "Detail" tab's field-editor form (per a reference screenshot of a
+   legacy admin contact-edit page) — two collapsible `Accordion` sections,
+   "General" and "Address", both open by default, each a responsive
+   `.lyra-form-grid` of real lyra-ui field components (`Input`/`Select`/
+   `Checkbox`/`DatePicker`), same "Accordion wrapping real editable fields"
+   composition `FormTemplate`'s own "Placement Information" section already
+   demonstrates (form-template.tsx) — not a hand-rolled bordered box imitating
+   one. `lyra-form-grid-wrap` on the root establishes the container-query
+   boundary `.lyra-form-grid` needs (see that class's own doc comment in
+   lyra-tokens.css): each row is 2-up at this component's own full width,
+   stepping down to a single column well before an `InteriorPanel`'s
+   typical ~250–425px width would otherwise crowd two fields onto one line.
+
+   Reference screenshot's field labels were all-caps ("CONTACT #", "FIRST
+   NAME") — that's the *legacy* admin app's own styling, not something to
+   replicate via CSS `text-transform` (CONTRIBUTING.md §17 already covers
+   exactly this mistake). Labels here are typed in normal case and rendered
+   through each field component's own built-in label, same as every other
+   field in this panel/app.
+
+   Fields with a real source reuse it instead of inventing a second,
+   possibly-disagreeing value: "Contact #"/"Total Balance"/"Address
+   1"/"City"/"State"/"Zip Code" come straight from `fields` (the same
+   per-customer data `buildCustomerInfoFields` already computed for the
+   Overview tab — see `getFieldValue` above), and "First Name"/"Last Name"
+   split `customerName` the same way `buildCustomerInfoFields`'s own
+   synthesized email does (`splitCustomerName`). Everything else in the
+   reference screenshot (Original Contact #, Title, Department, Balance
+   Due, Account Block, Group, Due Date, Address 2) has no real or
+   synthesized source anywhere in this app's data, so those stay at the
+   screenshot's own shown defaults (empty / "None" / unchecked-false where
+   shown, "$0.00" for Balance Due specifically since it's a distinct
+   "amount currently owed" concept from Total Balance, not just a repeat of
+   it) — editable, uncontrolled-from-outside local state, same
+   "self-contained, not wired to persistence" status as every other
+   prototype form in this app (`FormTemplate` included). */
+function CustomerDetailTabContent({
+  customerName,
+  fields,
+}: {
+  customerName?: string;
+  fields: CustomerInfoField[];
+}) {
+  const { firstName, lastName } = splitCustomerName(customerName);
+
+  const [originalContactNumber, setOriginalContactNumber] = useState("");
+  const [title, setTitle] = useState("");
+  const [department, setDepartment] = useState("");
+  const [balanceDue, setBalanceDue] = useState("$0.00");
+  const [active, setActive] = useState(true);
+  const [accountBlock, setAccountBlock] = useState("none");
+  const [group, setGroup] = useState("");
+  const [dueDate, setDueDate] = useState<Date | undefined>(undefined);
+  const [address2, setAddress2] = useState("");
+
+  return (
+    <div className="flex flex-col gap-4 px-4 pb-4 lyra-form-grid-wrap">
+      <Accordion
+        type="multiple"
+        defaultValues={["general", "address"]}
+        items={[
+          {
+            id: "general",
+            title: "General",
+            content: (
+              <div className="flex flex-col gap-4">
+                <div className="lyra-form-grid">
+                  <Input label="Contact #" value={getFieldValue(fields, "Contact #")} readonly />
+                  <Input label="Original Contact #" value={originalContactNumber} onChange={(e) => setOriginalContactNumber(e.target.value)} />
+                </div>
+                <div className="lyra-form-grid">
+                  <Input label="First Name" defaultValue={firstName} />
+                  <Input label="Last Name" defaultValue={lastName} />
+                </div>
+                <div className="lyra-form-grid">
+                  <Input label="Title" value={title} onChange={(e) => setTitle(e.target.value)} />
+                  <Input label="Department" value={department} onChange={(e) => setDepartment(e.target.value)} />
+                </div>
+                <div className="lyra-form-grid">
+                  <Input label="Total Balance" value={getFieldValue(fields, "Balance")} readonly />
+                  <Input label="Balance Due" value={balanceDue} onChange={(e) => setBalanceDue(e.target.value)} />
+                </div>
+                <div className="lyra-form-grid">
+                  <Checkbox label="Active" checked={active} onCheckedChange={(checked) => setActive(checked === true)} />
+                  <Select
+                    label="Account Block"
+                    options={CUSTOMER_DETAIL_ACCOUNT_BLOCK_OPTIONS}
+                    value={accountBlock}
+                    onValueChange={setAccountBlock}
+                  />
+                </div>
+                <div className="lyra-form-grid">
+                  <Select
+                    label="Group"
+                    options={[]}
+                    value={group}
+                    onValueChange={setGroup}
+                    placeholder="Select group"
+                  />
+                  <DatePicker label="Due Date" value={dueDate} onChange={setDueDate} />
+                </div>
+              </div>
+            ),
+          },
+          {
+            id: "address",
+            title: "Address",
+            content: (
+              <div className="flex flex-col gap-4">
+                <div className="lyra-form-grid">
+                  <Input label="Address 1" value={getFieldValue(fields, "Address")} readonly />
+                  <Input label="Address 2" value={address2} onChange={(e) => setAddress2(e.target.value)} />
+                </div>
+                <div className="lyra-form-grid">
+                  <Input label="City" value={getFieldValue(fields, "City")} readonly />
+                  <Input label="State" value={getFieldValue(fields, "State")} readonly />
+                </div>
+                <div className="lyra-form-grid">
+                  <Input label="Zip Code" value={getFieldValue(fields, "Zip Code")} readonly />
+                </div>
+              </div>
+            ),
+          },
+        ]}
+      />
+    </div>
+  );
+}
+
+/** Bare digits (US-style raw phone digits, no formatting/dial code — what
+ *  `PhoneInput`'s own `PhoneValue.number` expects) parsed out of one of
+ *  this panel's own already-formatted display strings (e.g. "Phone #"'s
+ *  "+1 614 749 1794"). Strips a leading "1" country-code digit when
+ *  present so a 10-digit US number round-trips back into `PhoneInput`
+ *  correctly instead of overflowing its mask by one digit. Falls back to
+ *  an empty number (still a valid, just-blank `PhoneValue`) for a
+ *  synthesized phone that doesn't parse cleanly, rather than showing
+ *  something wrong. */
+function phoneValueFromDisplay(display: string): PhoneValue {
+  const digits = display.replace(/\D/g, "");
+  const withoutCountryCode = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+  return { countryCode: "us", number: withoutCountryCode };
+}
+
+const CUSTOMER_DIRECTORY_BLOCK_OPTIONS = [
+  { value: "no-block", label: "No Block" },
+  { value: "block-daily", label: "Block Daily" },
+  { value: "block-permanent", label: "Block Permanent" },
+];
+
+/** Total phone slots the Directory tab renders — "up to 10 phones" per the
+ *  reference screenshot: the first is always labeled "Home", the rest
+ *  "Phone 2" through "Phone 10". */
+const CUSTOMER_DIRECTORY_PHONE_COUNT = 10;
+const CUSTOMER_DIRECTORY_PHONE_LABELS = Array.from({ length: CUSTOMER_DIRECTORY_PHONE_COUNT }, (_, i) =>
+  i === 0 ? "Home" : `Phone ${i + 1}`
+);
+
+interface CustomerDirectoryPhoneState {
+  phone: PhoneValue;
+  consentCall: boolean;
+  consentSms: boolean;
+  block: string;
+}
+
+/* ── CustomerDirectoryPhoneRow ──
+   One phone slot's worth of fields, its own little self-contained block —
+   pulled out of `CustomerDirectoryTabContent` (rather than inlined in a
+   `.map`) so each of the up to 10 rows below owns independent `useState`
+   the normal way a component does, instead of ten parallel array-indexed
+   state slots in the parent needing hand-rolled per-index update
+   functions for every field. Same "Call Attempts Today/Total" read-only
+   stat pair for every row (there's no live call-attempt tracking in this
+   demo, same static-`0` status as `TrackedChannel.messageCount`
+   elsewhere) — plain text, not `Metric`/`DashboardCardMetric`, since those
+   render a large headline figure + caption meant for a dashboard card,
+   not a compact inline stat under a phone field. */
+function CustomerDirectoryPhoneRow({
+  label,
+  defaultState,
+}: {
+  label: string;
+  defaultState: CustomerDirectoryPhoneState;
+}) {
+  const [phone, setPhone] = useState<PhoneValue>(defaultState.phone);
+  const [consentCall, setConsentCall] = useState(defaultState.consentCall);
+  const [consentSms, setConsentSms] = useState(defaultState.consentSms);
+  const [block, setBlock] = useState(defaultState.block);
+
+  return (
+    <div className="flex flex-col gap-3 px-4 py-4 border-t border-lyra-border-subtle">
+      <PhoneInput label={label} value={phone} onChange={setPhone} />
+      <div className="flex flex-col gap-1">
+        <span className="lyra-body-md-emphasis text-lyra-fg-default">Call Attempts Today: 0</span>
+        <span className="lyra-body-md-emphasis text-lyra-fg-default">Call Attempts Total: 0</span>
+      </div>
+      <div className="lyra-form-grid">
+        <div className="flex flex-col gap-2">
+          <Checkbox label="Consent Call" checked={consentCall} onCheckedChange={(c) => setConsentCall(c === true)} />
+          <Checkbox label="Consent SMS" checked={consentSms} onCheckedChange={(c) => setConsentSms(c === true)} />
+        </div>
+        <RadioGroup value={block} onValueChange={setBlock} className="gap-2">
+          {CUSTOMER_DIRECTORY_BLOCK_OPTIONS.map((option) => (
+            <RadioGroupItem key={option.value} value={option.value} label={option.label} />
+          ))}
+        </RadioGroup>
+      </div>
+    </div>
+  );
+}
+
+/* ── CustomerDirectoryTabContent ──
+   The "Directory" tab (per a reference screenshot of a legacy admin
+   contact-edit page): an `EmailInput` + a standalone consent `Checkbox` at
+   the top, then up to 10 phone slots (`CustomerDirectoryPhoneRow`),
+   separated by a hairline divider between every section
+   (`border-lyra-border-subtle`). The reference screenshot's own
+   alternating shaded/unshaded rows were dropped on request — plain
+   dividers only, no zebra striping.
+
+   Reference screenshot's own field labels were all-caps ("EMAIL", "HOME") —
+   same legacy-app-styling situation as the Detail tab's "CONTACT #" etc.
+   (see `CustomerDetailTabContent`'s own doc comment and CONTRIBUTING.md
+   §17): typed in normal case here and left to each field component's own
+   built-in label typography, not forced uppercase via CSS.
+
+   Only the "Home" row (the first phone slot) seeds from real data — the
+   same `fields` "Phone #" this panel's Overview/Detail tabs already show
+   (parsed back into a `PhoneValue` via `phoneValueFromDisplay`), with
+   `consentCall`/`consentSms` defaulted true since it's the customer's
+   already-established primary channel. "Phone 2" through "Phone 10" have
+   no real or synthesized source (a customer doesn't have 10 real numbers
+   in this app's data), so they start genuinely blank/unconsented, same as
+   the reference screenshot shows them. */
+function CustomerDirectoryTabContent({ email, phoneDisplay }: { email: string; phoneDisplay: string }) {
+  const [directoryEmail, setDirectoryEmail] = useState(email);
+  const [emailConsent, setEmailConsent] = useState(false);
+
+  return (
+    <div className="flex flex-col lyra-form-grid-wrap">
+      <div className="flex flex-col gap-3 px-4 py-4">
+        <EmailInput label="Email" value={directoryEmail} onChange={setDirectoryEmail} />
+        <Checkbox label="Consent" checked={emailConsent} onCheckedChange={(c) => setEmailConsent(c === true)} />
+      </div>
+      {CUSTOMER_DIRECTORY_PHONE_LABELS.map((label, i) => (
+        <CustomerDirectoryPhoneRow
+          key={label}
+          label={label}
+          defaultState={
+            i === 0
+              ? { phone: phoneValueFromDisplay(phoneDisplay), consentCall: true, consentSms: true, block: "no-block" }
+              : { phone: { countryCode: "us", number: "" }, consentCall: false, consentSms: false, block: "no-block" }
+          }
+        />
+      ))}
+    </div>
+  );
+}
+
+function CustomerInformationPanelBody({
+  activeTab,
+  customerName,
+  fields,
+  latestInteraction,
+}: {
+  activeTab: number;
+  /** Needed here (not just by `buildCustomerInfoFields`) for the Detail
+   *  tab's "First Name"/"Last Name" fields — see `CustomerDetailTabContent`. */
+  customerName?: string;
+  /** Built per-interaction by `buildCustomerInfoFields` (see
+   *  `CustomerInformationInteriorPanel`, which owns the interaction's
+   *  `customerName`/`recordId`/`channels` this depends on) — no longer a
+   *  fixed module-level placeholder shared by every interaction. */
+  fields: CustomerInfoField[];
+  /** Built per-interaction by `buildLatestInteraction` — see that
+   *  function's own doc comment. */
+  latestInteraction: CustomerLatestInteraction;
+}) {
+  return (
+    <div className="flex flex-col">
+      {/* No avatar/name/presence block here — the InteriorPanel's own
+          header (`headerTitle="Customer Information"` +
+          `headerSubhead="{name} · {id}"`) already shows the name, so a
+          second name+avatar block right below it was redundant.
+
+          No tabs here either anymore — they used to live at the top of
+          this same scrolling body, pinned via a hand-rolled `sticky`
+          wrapper (see the git history / CONTRIBUTING.md's "Composing
+          panel body content" for the full story of why that was wrong:
+          the surrounding scroll container's own scrollbar still ran
+          alongside a merely-`sticky` row, and `TabList`'s "N More"
+          overflow menu had its own separate bug where selecting a tab
+          from it silently did nothing once the row collapsed, fixed in
+          tabs.tsx). They now render inside the header itself via
+          `InteriorPanel`'s `headerTabs` prop — see
+          `CustomerInformationInteriorPanel` below, which owns the
+          `activeTab` state both this body and that header tab row need
+          and passes this component just the number.
+
+          This field list and the Latest Interaction accordion below it are
+          now both explicitly gated to the Overview tab (`activeTab ===
+          ...indexOf("Overview")`) — previously only the accordion had that
+          gate, so this list rendered on every tab, including the new
+          Detail tab added below, which shows its own full editable version
+          of the same fields (`CustomerDetailTabContent`) and would
+          otherwise show them twice.
+
+          The field list and the Latest Interaction accordion below now
+          share one `.lyra-card-split-wrap`/`.lyra-card-split` row (see
+          lyra-tokens.css) instead of always stacking — reusing the same
+          family `DashboardCard` bodies already use for "a couple of
+          regions side by side, stacking once the container's own width
+          gets tight" rather than inventing a new one (its ≤480px threshold
+          already fits here on both ends: this panel's normal resizable
+          range, ~350–425px per `InteriorPanel`'s own min/max defaults,
+          stays comfortably under it — single column, unchanged from
+          before this existed — and `allowFullScreen`'d width is easily
+          past it — side by side). `align-items: stretch` (that family's
+          own default) is harmless here specifically because `Accordion`'s
+          own root has no `h-full`/`flex-1` of its own (accordion.tsx) — a
+          stretched flex item just leaves invisible empty space below its
+          natural-height content, not a visibly over-tall bordered box.
+
+          Unlike `.lyra-container-grid`/`.lyra-form-grid`, `.lyra-card-
+          split` does NOT put `flex: 1 1 0%` on its children automatically
+          — that family's own two optional modifiers (`.lyra-card-split-
+          fixed`, a deliberately fixed 12rem column; `.lyra-card-split-
+          chart`, `flex: 1 1 0%` for the region beside it) exist precisely
+          because its usual pairing is one fixed-width region next to one
+          flexible one, not two equal columns. Left as plain children here,
+          the two columns took their own natural content width instead —
+          the field list (narrow content) versus the Latest Interaction
+          card (padding + longer text) rendering visibly unequal. The new
+          `.lyra-card-split-even` modifier (lyra-tokens.css) on both fixes
+          that, splitting the row evenly (and correctly resetting back to
+          full-width at the stacked stage, same as `.lyra-container-grid`/
+          `.lyra-form-grid`'s own children — see that modifier's own doc
+          comment for why a bare `flex-1` utility class alone isn't enough
+          here). */}
+      {activeTab === CUSTOMER_PANEL_TABS.indexOf("Overview") && (
+        <div className="px-4 py-3 lyra-card-split-wrap">
+          <div className="lyra-card-split">
+            <div className="flex flex-col gap-3 lyra-card-split-even">
+              {fields.map((field) => (
+                <div key={field.label} className="flex flex-col gap-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <Label label={field.label} />
+                    <span className="lyra-body-md text-lyra-fg-secondary whitespace-nowrap">{field.value}</span>
+                  </div>
+                  <Separator />
+                </div>
+              ))}
+            </div>
+
+            {/* Latest Interaction summary. Wrapped in a neutral container
+                (`bg-lyra-bg-control-subtle`, rounded) per CONTRIBUTING.md's
+                "Composing panel body content" convention, rather than
+                sitting flush against the panel background — the
+                convention to follow for any future card-like block added
+                here, not a one-off choice for this block alone.
+
+                Collapsible via lyra-ui's `Accordion` (single item, open by
+                default) rather than a plain static block, so the panel can
+                be collapsed once read. Its trigger renders the "Latest
+                Interaction" title itself — no hand-styled label needed
+                here at all, which also fixes an earlier mistake: that
+                label used to be a hand-built `uppercase tracking-wide`
+                span, applying an all-caps CSS transform to change how it
+                displayed instead of just typing it correctly — exactly
+                the thing CONTRIBUTING.md §17 ("Field label casing") says
+                not to do ("don't add `text-transform`; type the label
+                text correctly to begin with"). Typing the string as
+                `"Latest Interaction"` (already correct Title Case) and
+                letting the shared component's own typography render it is
+                the fix, not restyling it further.
+
+                Content itself comes from `latestInteraction` (built by
+                `buildLatestInteraction`) rather than one fixed placeholder
+                blurb — see that function's own doc comment for why (it
+                used to be the exact same "Asked about upgrading her
+                plan..." summary for every customer, gendered pronoun and
+                all, regardless of who was actually open). `statusColor`
+                drives the `Badge`'s `color` instead of a hardcoded
+                `"green"`, since a synthesized status can land on
+                "Escalated"/"Pending" too, not just "Resolved". */}
+            <Accordion
+              className="rounded-lyra-md border border-lyra-border-subtle bg-lyra-bg-control-subtle overflow-hidden h-fit lyra-card-split-even"
+              defaultValue="latest-interaction"
+              items={[
+                {
+                  id: "latest-interaction",
+                  title: "Latest Interaction",
+                  content: (
+                    <div className="flex flex-col gap-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="inline-flex items-center gap-1.5 lyra-body-sm text-lyra-fg-secondary">
+                          <Clock className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
+                          {latestInteraction.timeAgo} · {latestInteraction.channel}
+                        </span>
+                        <Badge color={latestInteraction.statusColor} variant="subtle">
+                          {latestInteraction.status}
+                        </Badge>
+                      </div>
+                      <p className="lyra-body-md text-lyra-fg-default">{latestInteraction.summary}</p>
+                      <span className="lyra-body-sm text-lyra-fg-secondary">
+                        {latestInteraction.caseId} · Handled by {latestInteraction.handledBy}
+                      </span>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+          </div>
+        </div>
+      )}
+
+      {activeTab === CUSTOMER_PANEL_TABS.indexOf("Detail") && (
+        <CustomerDetailTabContent customerName={customerName} fields={fields} />
+      )}
+
+      {activeTab === CUSTOMER_PANEL_TABS.indexOf("Directory") && (
+        <CustomerDirectoryTabContent
+          email={getFieldValue(fields, "Email")}
+          phoneDisplay={getFieldValue(fields, "Phone #")}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ── CustomerInformationInteriorPanel ──
+   Owns `activeTab` — the one piece of state both the header's `TabList`
+   (via `InteriorPanel`'s `headerTabs`) and the scrolling body below it
+   (`CustomerInformationPanelBody`) need, which is why this wraps both
+   instead of `CustomerInformationPanelBody` owning that state itself the
+   way it used to when the tabs still lived inside it.
+
+   Also where the field list and Latest Interaction summary are actually
+   computed (`buildCustomerInfoFields`/`buildLatestInteraction`, each
+   memoized on `customerName`/`recordId`/`channels`) — takes the raw
+   interaction fields instead of a pre-joined `headerSubhead` string so it
+   has what it needs to build the header text and both panel-body pieces
+   from the same source, rather than the caller assembling one string this
+   component has to parse back apart. */
+function CustomerInformationInteriorPanel({
+  open,
+  onClose,
+  customerName,
+  recordId,
+  channels,
+  width,
+  onWidthChange,
+}: {
+  open: boolean;
+  onClose: () => void;
+  customerName?: string;
+  recordId: string;
+  channels: TrackedChannel[];
+  width: number;
+  onWidthChange: (width: number) => void;
+}) {
+  const [activeTab, setActiveTab] = useState(0);
+  const fields = useMemo(
+    () => buildCustomerInfoFields(customerName, recordId, channels),
+    [customerName, recordId, channels]
+  );
+  const latestInteraction = useMemo(
+    () => buildLatestInteraction(customerName, recordId),
+    [customerName, recordId]
+  );
+
+  return (
+    <InteriorPanel
+      side="right"
+      open={open}
+      onClose={onClose}
+      headerTitle="Customer Information"
+      headerSubhead={`${customerName ?? "Customer"} · ${recordId}`}
+      // Lets an agent expand this panel to the full width of its container
+      // when a tab's content (e.g. Directory's phone list, or Detail's
+      // two-column form) would benefit from more room than the panel's
+      // normal ~350–425px resizable range comfortably gives it — see
+      // `allowFullScreen`'s own doc comment in interior-panel.tsx.
+      allowFullScreen
+      // `overflowBreakpoint="compact"` per tabs.tsx's own doc comment —
+      // the fixed "wide" threshold (its default) is "basically always
+      // wrong" for an `InteriorPanel`'s narrow, resizable width range;
+      // content-aware "compact" collapses exactly when these 8 tabs stop
+      // fitting, at whatever width that turns out to be.
+      headerTabs={
+        <TabList className="px-4" overflowMenu overflowBreakpoint="compact">
+          {CUSTOMER_PANEL_TABS.map((label, i) => (
+            <Tab key={label} active={activeTab === i} onClick={() => setActiveTab(i)}>
+              {label}
+            </Tab>
+          ))}
+        </TabList>
+      }
+      width={width}
+      onWidthChange={onWidthChange}
+    >
+      <CustomerInformationPanelBody
+        activeTab={activeTab}
+        customerName={customerName}
+        fields={fields}
+        latestInteraction={latestInteraction}
+      />
+    </InteriorPanel>
+  );
+}
+
 /* ── AgentNextGenPage ── */
 
 type Page = "agent-workspace" | "agent" | "outbound" | "login";
@@ -2012,11 +2863,11 @@ export function AgentNextGenPage({
    */
   initialInteraction?: ActiveInteraction;
   /**
-   * Overrides the record-header `PanelPinButton`'s tooltip (both pinned and
-   * unpinned label, since "Toggle Overview" describes the action generically
-   * rather than a pin/unpin pair) — mirrors lyra-ui's `AgentNextGenTemplate`
-   * prop of the same name. Defaults to "Toggle Overview" here too, matching
-   * that template's current copy; pass a different string to override it.
+   * Overrides the record-header toggle button's tooltip for the Customer
+   * Information `InteriorPanel` (the button is icon-only, so this is its
+   * only visible label) — mirrors lyra-ui's `AgentNextGenTemplate` prop of
+   * the same name. Defaults to "Toggle Customer Information" here; pass a
+   * different string to override it.
    */
   sidePanelToggleLabel?: string;
 }) {
@@ -2237,54 +3088,28 @@ export function AgentNextGenPage({
     });
   }, [queueSubItems, clockTick]);
 
-  /* Side panel */
-  const [sidePanelOpen,      setSidePanelOpen]      = useState(false);
-  const [sidePanelPinned,    setSidePanelPinned]    = useState(false);
-  const [sidePanelResizing,  setSidePanelResizing]  = useState(false);
-  const [sidePanelWidth,     setSidePanelWidth]     = useState(256);
-  const [containerWidth,     setContainerWidth]     = useState(9999);
-  const sidePanelTimer = useRef<ReturnType<typeof setTimeout>>();
+  /* Customer Information panel — an `InteriorPanel` (right-docked, inline
+     within the interaction body's own flex row) rather than the `SidePanel`/
+     `CustomerInformationPanel` this used to be built on. `InteriorPanel` has
+     no pin/hover-preview concept at all (that's a `SidePanel`-only idea) and
+     already handles the "too narrow, force an overlay" case internally
+     (built into the component itself below ~1024px container width), so
+     none of the old pinned/hover-timer/narrow-container plumbing is needed
+     here anymore — just a plain open/closed boolean, matching how the
+     Desk dashboard's own right-docked `InteriorPanel` (below, "Case
+     Details"/queue drill-down) already works. */
+  const [customerPanelOpen,  setCustomerPanelOpen]  = useState(false);
+  const [customerPanelWidth, setCustomerPanelWidth] = useState(350);
 
-  // Track container width to force unpinned below 768px
+  // The Customer Information panel belongs to the interaction it was opened
+  // from — its only trigger is the toggle button on the interaction
+  // `PageHeader`, which doesn't exist on the Desk dashboard at all. Leaving
+  // the interaction (dismissing it, or navigating to Desk/another tab) must
+  // close it, or it'd stay open pointing at a customer who's no longer the
+  // active interaction. Keyed on the id (a stable primitive) rather than
+  // the `activeInteraction` object itself.
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    setContainerWidth(el.getBoundingClientRect().width);
-    const ro = new ResizeObserver(([entry]) => setContainerWidth(entry.contentRect.width));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  const isNarrowContainer = containerWidth < 768;
-  // When narrow: force overlay mode and hide pin button
-  const effectivePinned = isNarrowContainer ? false : sidePanelPinned;
-
-  // Close (and fully unpin) the Designer panel the moment the container
-  // drops below 768px — same "reset state on narrow, don't just hide it
-  // visually" pattern as the nav/docked-panel effects below. Without this,
-  // a panel left open+pinned at a wide width stayed open (just re-skinned
-  // as an overlay by `effectivePinned` above) the instant the container
-  // narrowed, instead of actually closing.
-  useEffect(() => {
-    if (isNarrowContainer) {
-      setSidePanelOpen(false);
-      setSidePanelPinned(false);
-    }
-  }, [isNarrowContainer]);
-
-  // The Designer panel belongs to the interaction it was opened from — its
-  // only trigger is the record icon on the interaction `PageHeader`, which
-  // doesn't exist on the Desk dashboard at all. Leaving the interaction
-  // (dismissing it, or navigating to Desk/another tab) must close it the
-  // same way narrowing the container does above; otherwise a panel pinned
-  // open on one customer stays pinned open after switching to a page that
-  // has no icon to close it with. Keyed on the id (a stable primitive)
-  // rather than the `activeInteraction` object itself.
-  useEffect(() => {
-    if (!activeInteractionId) {
-      setSidePanelOpen(false);
-      setSidePanelPinned(false);
-    }
+    if (!activeInteractionId) setCustomerPanelOpen(false);
   }, [activeInteractionId]);
 
   // Track window width for nav overlay breakpoint
@@ -2316,46 +3141,10 @@ export function AgentNextGenPage({
     }
   }, [isNavNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Both guarded on `sidePanelPinned` — matches `admin-shell.tsx`'s
-  // `handleLeftHoverStart`/`handleLeftHoverEnd` (the canonical `SidePanel`
-  // reference): hover previews the panel while *unpinned* only. Once
-  // pinned, hover does nothing at all in either direction — open/closed is
-  // controlled exclusively by the click toggle (`handleSidePanelIconToggle`)
-  // while pinned, same as every other `SidePanel` consumer in this system.
-  // `onSidePanelHoverStart` used to have no pinned guard at all, so hovering
-  // the icon could silently reopen a pinned-but-closed panel — inconsistent
-  // with the click-only contract above. (Still no `sidePanelHoverEnabled`
-  // flag or other hidden gating beyond this one plain check — that flag was
-  // removed earlier this session for leaving a stricter one-off "click to
-  // reopen" state stuck after an icon-click unpin; this fix is orthogonal to
-  // that and doesn't reintroduce it.)
-  const onSidePanelHoverStart = () => {
-    if (sidePanelPinned) return;
-    clearTimeout(sidePanelTimer.current);
-    setSidePanelOpen(true);
-  };
-  const onSidePanelHoverEnd = () => {
-    if (sidePanelPinned) return;
-    sidePanelTimer.current = setTimeout(() => setSidePanelOpen(false), 300);
-  };
-  const handleSidePanelPinToggle = () => {
-    setSidePanelPinned((v) => !v);
-    setSidePanelOpen(true);
-  };
-  /* Click on the interaction record icon (see the `icon` prop on that
-     PageHeader below) — toggles open/closed only, and only while already
-     pinned (matching admin-shell.tsx's handleLeftToggle/handleRightToggle:
-     a no-op while unpinned, since that state is hover-driven instead).
-     Deliberately does NOT touch `sidePanelPinned` — pinning/unpinning is
-     `handleSidePanelPinToggle`'s job alone (the panel's own internal pin
-     button). This used to also flip `sidePanelPinned` to match, which
-     meant "closing" a pinned panel via this icon silently unpinned it too
-     — so reopening it later (e.g. by hovering) came back unpinned instead
-     of staying pinned like Panel.stories.tsx's "Side Panel" reference
-     behavior requires. */
-  const handleSidePanelIconToggle = () => {
-    if (effectivePinned) setSidePanelOpen((v) => !v);
-  };
+  // Plain open/closed toggle for the Customer Information `InteriorPanel`'s
+  // trigger button — no pin/hover state to coordinate with anymore (see the
+  // panel state's own doc comment above).
+  const handleCustomerPanelToggle = () => setCustomerPanelOpen((v) => !v);
 
   const MAX_PANEL_HEIGHT = 860;
   const BOTTOM_PADDING   = 8;
@@ -2457,6 +3246,11 @@ export function AgentNextGenPage({
     });
     setActiveInteractionId(selection.contact.id);
     setNavOpen(true);
+    // A newly launched interaction defaults to its Customer Information
+    // panel open — previously it stayed closed until the agent clicked the
+    // toggle on every single interaction, even though that's the panel
+    // they almost always want up front.
+    setCustomerPanelOpen(true);
   };
 
   const handleQuickDial = (phoneNumber: string) => {
@@ -2482,6 +3276,7 @@ export function AgentNextGenPage({
     });
     setActiveInteractionId(id);
     setNavOpen(true);
+    setCustomerPanelOpen(true);
   };
 
   /* "Redial" from the home tab's Contact History card — same merge-by-id
@@ -2530,6 +3325,7 @@ export function AgentNextGenPage({
     });
     setActiveInteractionId(id);
     setNavOpen(true);
+    setCustomerPanelOpen(true);
   };
 
   /* "Unassign & Dismiss" — `InteractionNavItem` itself decides which of
@@ -3147,50 +3943,11 @@ export function AgentNextGenPage({
             ref used to position float panels. */}
         <div ref={containerRef} className="relative flex flex-1 min-w-0 overflow-hidden pr-3 pb-3">
 
-          {/* Main Container — flex row so pinned SidePanel sits left of PageHeader + content.
-              relative so unpinned SidePanel can overlay the full surface. */}
+          {/* Main Container — flex row; PageHeader + content is the sole
+              flex child now that the Customer Information panel moved to
+              an `InteriorPanel` docked right *inside* the interaction body
+              below, instead of a `SidePanel` docked left out here. */}
           <Container className="flex flex-1 overflow-hidden relative">
-
-            {/* Customer Information Panel — one instance whose `pinned` prop
-                just flips SidePanel's own internal inline-vs-overlay branch, the
-                same way SidePanel.stories.tsx's "Side Panel — Left/Right" stories
-                toggle `pinned`/`open` on a single element. This used to be two
-                separately-gated `<SidePanel>` elements (one per branch, below) —
-                flipping `effectivePinned` unmounted one and mounted the
-                other, so the very click meant to animate the panel open
-                instead made it jump straight to its resting width (a fresh
-                mount has no prior width to transition from). One element,
-                prop-driven, animates correctly either way — matching the
-                story. Gated on `activeInteraction`, not just
-                `showPanelToggle` — its only trigger is the record icon on
-                the interaction `PageHeader` below, which doesn't exist on
-                the Desk dashboard. Without this it stayed mounted (and, if
-                pinned, stayed open) after navigating away from the
-                interaction that opened it, since nothing else about
-                `showPanelToggle` varies by page. The `activeInteraction`-
-                clearing effect above already closes/unpins it going into
-                that transition, so unmounting here doesn't lose any
-                pinned/open state that needed to persist.
-                Was a bare `<SidePanel headerTitle="Designer" .../>` with no
-                body content — swapped for `CustomerInformationPanel`
-                (lyra-ui) which fixes the header to "Customer Information"
-                and adds a "{name} · {id}" subhead for whoever this
-                interaction is with, composed on top of the same `SidePanel`
-                rather than reimplemented. */}
-            {showPanelToggle && activeInteraction && (
-              <CustomerInformationPanel
-                side="left"
-                open={sidePanelOpen}
-                pinned={effectivePinned}
-                person={{ name: activeInteraction.customerName ?? "Customer", id: activeInteraction.recordId }}
-                onPinToggle={isNarrowContainer ? undefined : handleSidePanelPinToggle}
-                width={sidePanelWidth}
-                onWidthChange={setSidePanelWidth}
-                onResizeStateChange={setSidePanelResizing}
-                onMouseEnter={onSidePanelHoverStart}
-                onMouseLeave={sidePanelResizing ? undefined : onSidePanelHoverEnd}
-              />
-            )}
 
             {/* Content column: PageHeader + page body */}
             <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
@@ -3216,47 +3973,50 @@ export function AgentNextGenPage({
                 <>
                   {showPageHeader && (
                     <PageHeader
-                      // Hovering this record icon reveals the Designer side
-                      // panel (the unpinned-overlay `SidePanel` below, via the
-                      // same `onSidePanelHoverStart`/`onSidePanelHoverEnd`
-                      // pair that SidePanel's own onMouseEnter/onMouseLeave
-                      // already use to stay open while the cursor moves from
-                      // here onto it). Clicking it is a real on/off toggle —
-                      // `handleSidePanelIconToggle` — pins it open on the
-                      // first click, and unpins *and closes* it on the next
-                      // (distinct from the panel's own internal pin button,
-                      // `handleSidePanelPinToggle`, which always leaves it
-                      // open). Scoped to this interaction PageHeader only —
-                      // the Desk dashboard's PageHeader (no `icon` prop) is
-                      // untouched, so this doesn't change anything there.
-                      //
-                      // The button itself is `PanelPinButton` — the exact
-                      // same trigger `SidePanel`'s own internal pin button uses
-                      // (Tooltip, focus ring, and the icon-rotates-45°-when-
-                      // pinned animation), just with its `icon` swapped from
-                      // `Pin` to `User` — composed, not re-implemented, per
-                      // lyra-ui's "composition over reimplementation" rule.
-                      // `iconAriaHidden={false}` because this slot is no
-                      // longer decorative — PageHeader's default aria-hidden
-                      // wrapper would otherwise hide a real, labeled button
-                      // from assistive tech.
-                      icon={
-                        <span
-                          onMouseEnter={onSidePanelHoverStart}
-                          onMouseLeave={sidePanelResizing ? undefined : onSidePanelHoverEnd}
-                        >
-                          <PanelPinButton
-                            pinned={sidePanelPinned}
-                            onToggle={handleSidePanelIconToggle}
-                            icon={<User className="h-4 w-4" strokeWidth={1.5} aria-hidden="true" />}
-                            pinnedLabel={sidePanelToggleLabel ?? "Toggle Overview"}
-                            unpinnedLabel={sidePanelToggleLabel ?? "Toggle Overview"}
-                          />
-                        </span>
-                      }
-                      iconAriaHidden={false}
                       title={activeInteraction.customerName ?? "Customer"}
                       subtitle={activeInteraction.recordId}
+                      // Toggle for the Customer Information `InteriorPanel`
+                      // below — lyra-ui's own documented pattern for an
+                      // InteriorPanel's open/close trigger (see
+                      // InteriorPanel.stories.tsx): a plain `Button` sitting
+                      // in the page header's `actions` slot (which renders
+                      // on the header's right side), not a dedicated toggle
+                      // component — InteriorPanel has no pin/hover concept
+                      // of its own to compose a fancier trigger around, the
+                      // way the old `SidePanel`-based version's
+                      // `PanelPinButton` did.
+                      // `aria-pressed` (not `aria-expanded`) — this reads as
+                      // a genuine toggle button with a persistent on/off
+                      // state, not a disclosure revealing adjacent content.
+                      // The pressed look reuses the same "active" treatment
+                      // CONTRIBUTING.md documents for `Menu`'s current-item
+                      // row (bg-lyra-bg-active-subtle, escalating on hover/
+                      // press) rather than inventing a one-off toggled color.
+                      // Icon-only now (`size="icon-md"`, one of `Button`'s
+                      // `ICON_SIZES` — see button.tsx) — that alone flips
+                      // `isIconVariant` on even though `variant="outline"`,
+                      // which is what makes `Button` auto-wrap it in a
+                      // `Tooltip` off the `title` prop and swap in
+                      // `aria-label` instead of visible text, no separate
+                      // `Tooltip` needed here.
+                      actions={
+                        showPanelToggle && (
+                          <Button
+                            variant="outline"
+                            size="icon-md"
+                            title={sidePanelToggleLabel ?? "Toggle Customer Information"}
+                            aria-pressed={customerPanelOpen}
+                            onClick={handleCustomerPanelToggle}
+                            className={
+                              customerPanelOpen
+                                ? "border-lyra-border-active bg-lyra-bg-active-subtle text-lyra-fg-active-strong hover:bg-lyra-state-hover-active-subtle active:bg-lyra-state-pressed-active-subtle"
+                                : undefined
+                            }
+                          >
+                            <User className="h-4 w-4" strokeWidth={1.5} aria-hidden="true" />
+                          </Button>
+                        )
+                      }
                     />
                   )}
                   {/* One tab per open channel — kept in sync with the same
@@ -3288,8 +4048,27 @@ export function AgentNextGenPage({
                       })}
                     </TabList>
                   )}
-                  <InteractionTranscript />
-                  <InteractionComposer />
+                  {/* Body row: transcript+composer column + Customer
+                      Information interior panel — same "main content +
+                      docked interior panel" flex-row shape as the Desk
+                      dashboard's own right-docked InteriorPanel below. */}
+                  <div className="relative flex flex-1 overflow-hidden">
+                    <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
+                      <InteractionTranscript />
+                      <InteractionComposer />
+                    </div>
+                    {showPanelToggle && (
+                      <CustomerInformationInteriorPanel
+                        open={customerPanelOpen}
+                        onClose={() => setCustomerPanelOpen(false)}
+                        customerName={activeInteraction.customerName}
+                        recordId={activeInteraction.recordId}
+                        channels={activeInteraction.channels}
+                        width={customerPanelWidth}
+                        onWidthChange={setCustomerPanelWidth}
+                      />
+                    )}
+                  </div>
                 </>
               ) : (
                 <>
@@ -3330,8 +4109,24 @@ export function AgentNextGenPage({
                         `lyra-heading-lg`, a step down from this greeting's
                         intentionally larger `lyra-heading-2xl`, so reusing
                         it would shrink the greeting rather than just
-                        toolbar-ing the actions). */}
-                    <div className="flex items-start justify-between gap-4">
+                        toolbar-ing the actions).
+
+                        `flex-wrap` — unlike `ContainerHeader`'s own
+                        title/actions row (which needs an opt-in container
+                        query, see that component's `actionsWrap` doc
+                        comment), a plain CSS wrap works here with no extra
+                        plumbing: this `h1`/`p` pair has no `truncate`/
+                        `whitespace-nowrap` constraining it, so its real
+                        (un-shrunk) content width is a genuine signal the
+                        browser can wrap against, instead of the artificially
+                        tiny "true" width truncated text reports. Without
+                        this, the toolbar was squeezing "Good morning, John"
+                        down word-by-word to make room for a pinned-right
+                        button that never moved, confirmed from a screenshot —
+                        `justify-between` naturally left-aligns the button
+                        once it's alone on its own wrapped line, no extra
+                        alignment override needed. */}
+                    <div className="flex flex-wrap items-start justify-between gap-4">
                       <div>
                         <h1 className="lyra-heading-2xl text-lyra-fg-default">
                           Good {getGreetingPeriod()}, {CURRENT_AGENT_FIRST_NAME}
