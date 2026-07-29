@@ -8,10 +8,11 @@ import {
   AppMenu,
   CXoneLogo,
   Modal,
-  AiPanel,
-  DraggablePanel,
+  useAiPanelContent,
+  useAgentNotificationsContent,
+  Draggable,
+  ContainerHeader,
   NotificationsBell,
-  AgentNotifications,
   AgentProfile,
   Container,
   InteriorPanel,
@@ -75,6 +76,7 @@ import {
   type AppMenuGroup,
   type AgentNotification,
   type DraggableVariant,
+  type EmbeddablePanelContent,
   type MenuEntry,
 } from "@nicecxone/lyra-ui";
 import { CREATE_NEW_AGENTS } from "@nicecxone/lyra-ui/agents-data";
@@ -110,6 +112,7 @@ import {
   Inbox,
   CalendarDays,
   MonitorUp,
+  GripVertical,
   History,
   ChevronRight,
   Copy,
@@ -2606,6 +2609,16 @@ function buildLatestInteraction(customerName: string | undefined, recordId: stri
 // looking up a specific tab's index.
 const CUSTOMER_PANEL_TABS = ["Overview", "Detail", "Directory", "Interactions", "Tasks", "Notes", "Accounts", "Tickets"];
 
+/** Shared neutral bordered-container treatment for every collapsible
+ *  `Accordion` in the Customer Information panel (Overview tab's "Customer
+ *  Overview"/"Latest Interaction", Detail tab's "General"/"Address",
+ *  Directory tab's per-phone-slot rows) — one constant instead of each tab
+ *  re-typing the same class string, so the four surfaces can't quietly
+ *  drift apart. Callers that need an additional class alongside it (the
+ *  Overview tab's `.lyra-card-split-even`) compose it with `cn(...)` rather
+ *  than duplicating this string with an extra class appended. */
+const CUSTOMER_INFO_ACCORDION_CLASSNAME = "rounded-lyra-md border border-lyra-border-subtle bg-lyra-bg-control-subtle overflow-hidden h-fit";
+
 /** Looks up one of `buildCustomerInfoFields`'s rows by label — lets the
  *  Detail tab below reuse the exact same Contact #/Balance/Address/City/
  *  State/Zip values the Overview tab already shows for this customer,
@@ -2679,11 +2692,21 @@ function CustomerDetailTabContent({
   const [dueDate, setDueDate] = useState<Date | undefined>(undefined);
   const [address2, setAddress2] = useState("");
 
+  // Same neutral bordered-container treatment as the Overview tab's
+  // "Customer Overview"/"Latest Interaction" accordions (see
+  // `CustomerInformationPanelBody`) — each section gets its own card-like
+  // container rather than the two sharing one borderless `Accordion` root,
+  // so "General" and "Address" read as distinct blocks instead of one long
+  // list. Split into two single-item `Accordion`s (each still open by
+  // default via its own `defaultValue`) instead of the previous single
+  // `type="multiple"` root, since that's what separate containers require —
+  // each item now toggles independently by construction, the same behavior
+  // `type="multiple"` was providing before.
   return (
-    <div className="flex flex-col gap-4 px-4 pb-4 lyra-form-grid-wrap">
+    <div className="flex flex-col gap-4 px-4 pt-3 pb-4 lyra-form-grid-wrap">
       <Accordion
-        type="multiple"
-        defaultValues={["general", "address"]}
+        defaultValue="general"
+        className={CUSTOMER_INFO_ACCORDION_CLASSNAME}
         items={[
           {
             id: "general",
@@ -2728,6 +2751,12 @@ function CustomerDetailTabContent({
               </div>
             ),
           },
+        ]}
+      />
+      <Accordion
+        defaultValue="address"
+        className={CUSTOMER_INFO_ACCORDION_CLASSNAME}
+        items={[
           {
             id: "address",
             title: "Address",
@@ -2836,6 +2865,12 @@ function CustomerDirectoryPhoneRow({
     <Accordion
       type="single"
       defaultValue={label}
+      // Same neutral bordered-container treatment as the Overview tab's
+      // "Customer Overview"/"Latest Interaction" accordions and the Detail
+      // tab's "General"/"Address" accordions (see those components' own
+      // comments) — each phone slot now reads as its own card instead of a
+      // borderless row, consistent across all three tabs.
+      className={CUSTOMER_INFO_ACCORDION_CLASSNAME}
       items={[
         {
           id: label,
@@ -2927,7 +2962,13 @@ function CustomerDirectoryTabContent({ email, phoneDisplay }: { email: string; p
         <EmailInput label="Email" value={directoryEmail} onChange={setDirectoryEmail} className="max-w-sm" />
         <Checkbox label="Consent" checked={emailConsent} onCheckedChange={(c) => setEmailConsent(c === true)} />
       </div>
-      <div className="border-t border-lyra-border-subtle">
+      {/* Each phone slot is now its own bordered card
+          (`CUSTOMER_INFO_ACCORDION_CLASSNAME` on the `Accordion` inside
+          `CustomerDirectoryPhoneRow`), so this wrapper switches from a bare
+          `border-t` + flush list (dividers supplied by each row's own
+          bottom border) to a gap + padding, matching the Overview/Detail
+          tabs' own card-stack spacing. */}
+      <div className="flex flex-col gap-4 px-4 pt-3 pb-4">
         {CUSTOMER_DIRECTORY_PHONE_LABELS.map((label, i) => (
           <CustomerDirectoryPhoneRow
             key={label}
@@ -3027,17 +3068,37 @@ function CustomerInformationPanelBody({
       {activeTab === CUSTOMER_PANEL_TABS.indexOf("Overview") && (
         <div className="px-4 py-3 lyra-card-split-wrap">
           <div className="lyra-card-split">
-            <div className="flex flex-col gap-3 lyra-card-split-even">
-              {fields.map((field) => (
-                <div key={field.label} className="flex flex-col gap-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <Label label={field.label} />
-                    <span className="lyra-body-md text-lyra-fg-secondary whitespace-nowrap">{field.value}</span>
-                  </div>
-                  <Separator />
-                </div>
-              ))}
-            </div>
+            {/* Customer Overview field list. Wrapped in the same neutral
+                container + collapsible `Accordion` treatment as the Latest
+                Interaction block below it (see that block's own comment for
+                the container/collapsible rationale — applies identically
+                here), rather than the field rows sitting flush against the
+                panel background. */}
+            <Accordion
+              className={cn(CUSTOMER_INFO_ACCORDION_CLASSNAME, "lyra-card-split-even")}
+              defaultValue="customer-overview"
+              items={[
+                {
+                  id: "customer-overview",
+                  title: "Customer Overview",
+                  content: (
+                    <div className="flex flex-col gap-3">
+                      {fields.map((field, index) => (
+                        <div key={field.label} className="flex flex-col gap-3">
+                          <div className="flex items-center justify-between gap-4">
+                            <Label label={field.label} />
+                            <span className="lyra-body-md text-lyra-fg-secondary whitespace-nowrap">
+                              {field.value}
+                            </span>
+                          </div>
+                          {index < fields.length - 1 && <Separator />}
+                        </div>
+                      ))}
+                    </div>
+                  ),
+                },
+              ]}
+            />
 
             {/* Latest Interaction summary. Wrapped in a neutral container
                 (`bg-lyra-bg-control-subtle`, rounded) per CONTRIBUTING.md's
@@ -3071,7 +3132,7 @@ function CustomerInformationPanelBody({
                 `"green"`, since a synthesized status can land on
                 "Escalated"/"Pending" too, not just "Resolved". */}
             <Accordion
-              className="rounded-lyra-md border border-lyra-border-subtle bg-lyra-bg-control-subtle overflow-hidden h-fit lyra-card-split-even"
+              className={cn(CUSTOMER_INFO_ACCORDION_CLASSNAME, "lyra-card-split-even")}
               defaultValue="latest-interaction"
               items={[
                 {
@@ -3322,90 +3383,52 @@ export function AgentNextGenPage({
   /* Panel animation state machine — see AgentNextGenTemplate.stories.tsx for full comment */
   type PanelState = "closed" | "open" | "closing";
 
-  /* AI panel state */
-  const [aiPanelOpen,  setAiPanelOpen]  = useState(false);
-  const [aiMounted,    setAiMounted]    = useState(false);
-  const [aiState,      setAiState]      = useState<PanelState>("closed");
-  // Defaults to "float" (a transient, portal-positioned panel anchored
-  // under the trigger button — same pattern as `notifVariant` below and
-  // the same behavior lyra-ui's own `AppHeader.stories.tsx`/
-  // `AgentNextGenTemplate.stories.tsx` demonstrate for this exact button:
-  // `ReactDOM.createPortal` + `getBoundingClientRect()`-derived fixed
-  // position, not a layout-pushing docked panel). This had drifted to
-  // `"docked"` — opening the full docked side panel immediately on first
-  // click instead of the floating popover-style panel lyra-ui shows —
-  // caught by the user comparing behavior directly. "docked" is still
-  // reachable afterward (dragging the panel to the edge, same as
-  // Notifications), just no longer the default on first open.
-  const [aiVariant,    setAiVariant]    = useState<DraggableVariant>("float");
-  const [aiWidth,      setAiWidth]      = useState(AI_PANEL_DEFAULT_WIDTH);
-  const [aiHeight,     setAiHeight]     = useState(860);
-  const [aiIsResizing, setAiIsResizing] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const aiFloatLeft  = useRef<number | null>(null);
-  const aiFloatTop   = useRef<number | null>(null);
-  const aiPanelRef   = useRef<HTMLDivElement>(null);
-  const aiAnimTimer  = useRef<ReturnType<typeof setTimeout>>();
+  /* ── Single-container app-header panel ──
+     Screen Pop/Conversations/Schedule/Notifications/Ask AI used to each be
+     an independently open/mounted/positioned/sized `Draggable` (five full
+     copies of this state, plus a `dockPanelExclusively` helper enforcing
+     "only one of the five may be docked at once"). Per request ("Multiple
+     Containers: false" — see lyra-ui's `Draggable.stories.tsx`
+     `MultiplePanelsSingleDock` story and its own "Multiple Containers"
+     control), there is now only ONE physical container — clicking a
+     different button just swaps `activePanelKey` (and therefore which
+     content shows) without the container itself resizing, repositioning,
+     or replaying its open/close animation. That also makes the old
+     "only one may be docked" rule trivially true (there's only ever one
+     container to dock) instead of something to actively enforce.
 
-  /* Notifications panel state */
-  const [notifOpen,       setNotifOpen]       = useState(false);
-  const [notifMounted,    setNotifMounted]    = useState(false);
-  const [notifState,      setNotifState]      = useState<PanelState>("closed");
-  const [notifVariant,    setNotifVariant]    = useState<DraggableVariant>("float");
-  const [notifWidth,      setNotifWidth]      = useState(360);
-  const [notifHeight,     setNotifHeight]     = useState(860);
-  const [notifIsResizing, setNotifIsResizing] = useState(false);
-  const notifFloatLeft = useRef<number | null>(null);
-  const notifFloatTop  = useRef<number | null>(null);
-  const notifPanelRef  = useRef<HTMLDivElement>(null);
-  const notifAnimTimer = useRef<ReturnType<typeof setTimeout>>();
+     Ask AI's and Notifications' actual content (previously only reachable
+     via the standalone `AiPanel`/`AgentNotifications` components, each of
+     which bakes its own header AND its own `Draggable` wrapper together)
+     now comes from `useAiPanelContent`/`useAgentNotificationsContent`
+     (lyra-ui) — the same two hooks those components call internally, so
+     this is a second CALLER of that content, not a second, drifting copy
+     of it. See lyra-ui's own "Single Container - Real Content" Storybook
+     demo (`Draggable.stories.tsx`) for this exact pattern in isolation. */
+  type PanelKey = "ai" | "notif" | "conversations" | "schedule" | "screenpop";
 
-  /* Conversations panel state — blank `DraggablePanel` (lyra-ui), same
-     open/mounted/state/variant/size/position shape as AI and Notifications
-     above (see the shared `dockPanelExclusively`/`getFloatStyle` helpers
-     below, which generalize the single-dock rule across all four panels
-     instead of hand-duplicating pairwise checks a third and fourth time). */
-  const [convOpen,       setConvOpen]       = useState(false);
-  const [convMounted,    setConvMounted]    = useState(false);
-  const [convState,      setConvState]      = useState<PanelState>("closed");
-  const [convVariant,    setConvVariant]    = useState<DraggableVariant>("float");
-  const [convWidth,      setConvWidth]      = useState(360);
-  const [convHeight,     setConvHeight]     = useState(860);
-  const [convIsResizing, setConvIsResizing] = useState(false);
-  const convFloatLeft = useRef<number | null>(null);
-  const convFloatTop  = useRef<number | null>(null);
-  const convPanelRef  = useRef<HTMLDivElement>(null);
-  const convAnimTimer = useRef<ReturnType<typeof setTimeout>>();
-
-  /* Schedule panel state — same shape as Conversations above */
-  const [schedOpen,       setSchedOpen]       = useState(false);
-  const [schedMounted,    setSchedMounted]    = useState(false);
-  const [schedState,      setSchedState]      = useState<PanelState>("closed");
-  const [schedVariant,    setSchedVariant]    = useState<DraggableVariant>("float");
-  const [schedWidth,      setSchedWidth]      = useState(360);
-  const [schedHeight,     setSchedHeight]     = useState(860);
-  const [schedIsResizing, setSchedIsResizing] = useState(false);
-  const schedFloatLeft = useRef<number | null>(null);
-  const schedFloatTop  = useRef<number | null>(null);
-  const schedPanelRef  = useRef<HTMLDivElement>(null);
-  const schedAnimTimer = useRef<ReturnType<typeof setTimeout>>();
-
-  /* Screen Pop panel state — same shape as Conversations/Schedule above */
-  const [popOpen,       setPopOpen]       = useState(false);
-  const [popMounted,    setPopMounted]    = useState(false);
-  const [popState,      setPopState]      = useState<PanelState>("closed");
-  const [popVariant,    setPopVariant]    = useState<DraggableVariant>("float");
-  const [popWidth,      setPopWidth]      = useState(360);
-  const [popHeight,     setPopHeight]     = useState(860);
-  const [popIsResizing, setPopIsResizing] = useState(false);
-  const popFloatLeft = useRef<number | null>(null);
-  const popFloatTop  = useRef<number | null>(null);
-  const popPanelRef  = useRef<HTMLDivElement>(null);
-  const popAnimTimer = useRef<ReturnType<typeof setTimeout>>();
+  const [panelOpen,      setPanelOpen]      = useState(false);
+  const [panelMounted,   setPanelMounted]   = useState(false);
+  const [panelState,     setPanelState]     = useState<PanelState>("closed");
+  const [activePanelKey, setActivePanelKey] = useState<PanelKey | null>(null);
+  // Defaults to "docked" per an earlier request — the AppHeader icon
+  // buttons should each open the full layout-pushing docked panel
+  // immediately on first click, rather than a transient floating popover.
+  // The actual dock-on-open happens explicitly in `handlePanelButtonClick`
+  // below (only when transitioning fully closed -> open) — "float" is
+  // still reachable afterward (dragging the panel off the edge, or just
+  // switching which button is active while already open leaves whatever
+  // variant it was already in alone).
+  const [panelVariant,    setPanelVariant]    = useState<DraggableVariant>("docked");
+  const [panelWidth,      setPanelWidth]      = useState(AI_PANEL_DEFAULT_WIDTH);
+  const [panelHeight,     setPanelHeight]     = useState(860);
+  const [panelIsResizing, setPanelIsResizing] = useState(false);
+  const containerRef  = useRef<HTMLDivElement>(null);
+  const panelFloatLeft = useRef<number | null>(null);
+  const panelFloatTop  = useRef<number | null>(null);
+  const panelRef       = useRef<HTMLDivElement>(null);
+  const panelAnimTimer = useRef<ReturnType<typeof setTimeout>>();
   const [screenPopApp, setScreenPopApp] = useState("");
-
-  /* z-index "bring to front" ordering, shared by all five draggable panels */
-  const [topPanel, setTopPanel] = useState<"ai" | "notif" | "conversations" | "schedule" | "screenpop" | null>(null);
 
   /* Interior panel (right) */
   const [interiorPanelOpen, setInteriorPanelOpen] = useState(false);
@@ -3508,17 +3531,14 @@ export function AgentNextGenPage({
     if (isNavNarrow && navOpen) setNavOpen(false);
   }, [isNavNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Close and undock any docked panels when viewport drops below 1280px
+  // Close and undock the shared app-header panel when viewport drops below
+  // 1280px — generalized from a pairwise "if AI is docked .../if
+  // Notifications is docked ..." (the old five-panel version only ever
+  // covered two of the five) to the one shared container this now is.
   useEffect(() => {
-    if (isNavNarrow) {
-      if (aiVariant === "docked") {
-        setAiVariant("float");
-        setAiPanelOpen(false);
-      }
-      if (notifVariant === "docked") {
-        setNotifVariant("float");
-        setNotifOpen(false);
-      }
+    if (isNavNarrow && panelVariant === "docked") {
+      setPanelVariant("float");
+      setPanelOpen(false);
     }
   }, [isNavNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -3846,272 +3866,206 @@ export function AgentNextGenPage({
     setShowWelcomeModal(false);
   };
 
-  /* Generic open/close state machine, shared by all five draggable panels
-     (AI, Notifications, Conversations, Schedule, Screen Pop) — mounts on
-     open, transitions through the shared fade/slide animation on close,
-     then unmounts. */
-  const usePanelOpenEffect = (
-    open: boolean,
-    setMounted: (v: boolean) => void,
-    setState: (v: PanelState) => void,
-    setHeight: (v: number) => void,
-    setTop: (v: "ai" | "notif" | "conversations" | "schedule" | "screenpop" | null) => void,
-    topKey: "ai" | "notif" | "conversations" | "schedule" | "screenpop",
-    floatLeft: React.MutableRefObject<number | null>,
-    width: number,
-    animTimer: React.MutableRefObject<ReturnType<typeof setTimeout> | undefined>
-  ) => {
-    useEffect(() => {
-      clearTimeout(animTimer.current);
-      if (open) {
-        if (containerRef.current && floatLeft.current === null) {
-          const r = containerRef.current.getBoundingClientRect();
-          floatLeft.current = r.left + containerRef.current.offsetWidth - width - 16;
-        }
-        setHeight(computePanelHeight());
-        setMounted(true);
-        setState("open");
-        setTop(topKey);
-      } else {
-        setState("closing");
-        animTimer.current = setTimeout(() => setState("closed"), 150);
-      }
-      return () => clearTimeout(animTimer.current);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open]);
-
-    // Shrink panel height with viewport when open
-    useEffect(() => {
-      if (!open) return;
-      const onResize = () => setHeight(computePanelHeight());
-      window.addEventListener("resize", onResize);
-      return () => window.removeEventListener("resize", onResize);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open]);
-  };
-
-  usePanelOpenEffect(aiPanelOpen, setAiMounted, setAiState, setAiHeight, setTopPanel, "ai", aiFloatLeft, aiWidth, aiAnimTimer);
-  usePanelOpenEffect(notifOpen,   setNotifMounted, setNotifState, setNotifHeight, setTopPanel, "notif", notifFloatLeft, notifWidth, notifAnimTimer);
-  usePanelOpenEffect(convOpen,     setConvMounted, setConvState, setConvHeight, setTopPanel, "conversations", convFloatLeft, convWidth, convAnimTimer);
-  usePanelOpenEffect(schedOpen,   setSchedMounted, setSchedState, setSchedHeight, setTopPanel, "schedule", schedFloatLeft, schedWidth, schedAnimTimer);
-  usePanelOpenEffect(popOpen,     setPopMounted, setPopState, setPopHeight, setTopPanel, "screenpop", popFloatLeft, popWidth, popAnimTimer);
-
-  /* Single-dock rule (documented in lyra-ui's draggable.tsx): only one
-     panel may be docked at a time. Generalized across all five panels
-     instead of the old pairwise "if AI is docked, force it to float"
-     checks — each panel here would otherwise need four near-identical
-     checks (one per sibling), which stops scaling the moment a third
-     (or fifth) panel is added. `dockPanelExclusively` looks at every
-     *other* panel and floats whichever one is currently docked. */
-  const dockPanelExclusively = (dockingKey: "ai" | "notif" | "conversations" | "schedule" | "screenpop") => {
-    const panels: Record<
-      "ai" | "notif" | "conversations" | "schedule" | "screenpop",
-      { variant: DraggableVariant; setVariant: (v: DraggableVariant) => void; width: number; floatLeft: React.MutableRefObject<number | null>; floatTop: React.MutableRefObject<number | null> }
-    > = {
-      ai:            { variant: aiVariant,    setVariant: setAiVariant,    width: aiWidth,    floatLeft: aiFloatLeft,    floatTop: aiFloatTop },
-      notif:         { variant: notifVariant, setVariant: setNotifVariant, width: notifWidth, floatLeft: notifFloatLeft, floatTop: notifFloatTop },
-      conversations: { variant: convVariant,  setVariant: setConvVariant,  width: convWidth,  floatLeft: convFloatLeft,  floatTop: convFloatTop },
-      schedule:      { variant: schedVariant, setVariant: setSchedVariant, width: schedWidth, floatLeft: schedFloatLeft, floatTop: schedFloatTop },
-      screenpop:     { variant: popVariant,   setVariant: setPopVariant,   width: popWidth,   floatLeft: popFloatLeft,   floatTop: popFloatTop },
-    };
-    (Object.keys(panels) as Array<keyof typeof panels>).forEach((key) => {
-      if (key === dockingKey) return;
-      const p = panels[key];
-      if (p.variant === "docked" && containerRef.current) {
+  // Open/close animation state machine for the single shared panel — mounts
+  // on open, transitions through the shared fade/slide animation on close,
+  // then unmounts. Previously a generic `usePanelOpenEffect` factory called
+  // once per panel (five times); with only one physical container now,
+  // there's only one caller, so it's inlined rather than kept as a
+  // factory-of-one.
+  useEffect(() => {
+    clearTimeout(panelAnimTimer.current);
+    if (panelOpen) {
+      if (containerRef.current && panelFloatLeft.current === null) {
         const r = containerRef.current.getBoundingClientRect();
-        p.floatLeft.current = r.left + containerRef.current.offsetWidth - p.width - 16;
-        p.floatTop.current  = null; // use computed default top
-        p.setVariant("float");
+        panelFloatLeft.current = r.left + containerRef.current.offsetWidth - panelWidth - 16;
       }
-    });
-  };
+      setPanelHeight(computePanelHeight());
+      setPanelMounted(true);
+      setPanelState("open");
+    } else {
+      setPanelState("closing");
+      panelAnimTimer.current = setTimeout(() => setPanelState("closed"), 150);
+    }
+    return () => clearTimeout(panelAnimTimer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panelOpen]);
+
+  // Shrink panel height with viewport when open
+  useEffect(() => {
+    if (!panelOpen) return;
+    const onResize = () => setPanelHeight(computePanelHeight());
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panelOpen]);
 
   // When docking: capture actual rendered position (includes CSS transform
-  // drag offset) before the float wrapper unmounts — restored when undocking.
-  const captureFloatPosition = (
-    panelRef: React.RefObject<HTMLDivElement | null>,
-    floatLeft: React.MutableRefObject<number | null>,
-    floatTop: React.MutableRefObject<number | null>
-  ) => {
-    if (panelRef.current) {
+  // drag offset) before the float wrapper unmounts — restored when
+  // undocking. The old "only one of five may be docked" exclusivity check
+  // (`dockPanelExclusively`) is gone — with a single shared container
+  // there's only ever one panel to dock in the first place.
+  const handlePanelVariantChange = (v: DraggableVariant) => {
+    if (v === "docked" && panelRef.current) {
       const r = panelRef.current.getBoundingClientRect();
-      floatLeft.current = r.left;
-      floatTop.current  = r.top;
+      panelFloatLeft.current = r.left;
+      panelFloatTop.current  = r.top;
     }
+    setPanelVariant(v);
   };
 
-  const handleAiVariantChange = (v: DraggableVariant) => {
-    if (v === "docked") {
-      captureFloatPosition(aiPanelRef, aiFloatLeft, aiFloatTop);
-      dockPanelExclusively("ai");
-    }
-    setAiVariant(v);
-  };
-  const handleNotifVariantChange = (v: DraggableVariant) => {
-    if (v === "docked") {
-      captureFloatPosition(notifPanelRef, notifFloatLeft, notifFloatTop);
-      dockPanelExclusively("notif");
-    }
-    setNotifVariant(v);
-  };
-  const handleConvVariantChange = (v: DraggableVariant) => {
-    if (v === "docked") {
-      captureFloatPosition(convPanelRef, convFloatLeft, convFloatTop);
-      dockPanelExclusively("conversations");
-    }
-    setConvVariant(v);
-  };
-  const handleSchedVariantChange = (v: DraggableVariant) => {
-    if (v === "docked") {
-      captureFloatPosition(schedPanelRef, schedFloatLeft, schedFloatTop);
-      dockPanelExclusively("schedule");
-    }
-    setSchedVariant(v);
-  };
-  const handlePopVariantChange = (v: DraggableVariant) => {
-    if (v === "docked") {
-      captureFloatPosition(popPanelRef, popFloatLeft, popFloatTop);
-      dockPanelExclusively("screenpop");
-    }
-    setPopVariant(v);
-  };
-
-  // Float position — absolute viewport coordinates, same formula every
-  // panel uses (anchored via its own `floatLeft`/`floatTop` refs once set).
-  const getFloatStyle = (
-    floatLeft: React.MutableRefObject<number | null>,
-    floatTop: React.MutableRefObject<number | null>,
-    width: number,
-    key: "ai" | "notif" | "conversations" | "schedule" | "screenpop"
-  ): React.CSSProperties => {
+  // Float position — absolute viewport coordinates, anchored via
+  // `panelFloatLeft`/`panelFloatTop` once set. No more per-panel z-index
+  // "bring to front" competition (`topPanel`) — there's only ever one
+  // floating panel now, so it's always topmost.
+  const getPanelFloatStyle = (): React.CSSProperties => {
     const rect = containerRef.current?.getBoundingClientRect();
-    const left = floatLeft.current !== null
-      ? floatLeft.current
+    const left = panelFloatLeft.current !== null
+      ? panelFloatLeft.current
       : containerRef.current
-        ? (rect?.left ?? 0) + containerRef.current.offsetWidth - width - 16
+        ? (rect?.left ?? 0) + containerRef.current.offsetWidth - panelWidth - 16
         : 0;
-    const top = floatTop.current !== null
-      ? floatTop.current
+    const top = panelFloatTop.current !== null
+      ? panelFloatTop.current
       : (rect?.top ?? 0);
-    return {
-      position: "fixed",
-      top,
-      left,
-      zIndex: topPanel === key ? 10000 : 9999,
-    };
+    return { position: "fixed", top, left, zIndex: 10000 };
   };
-  const getAiFloatStyle    = () => getFloatStyle(aiFloatLeft, aiFloatTop, aiWidth, "ai");
-  const getNotifFloatStyle = () => getFloatStyle(notifFloatLeft, notifFloatTop, notifWidth, "notif");
-  const getConvFloatStyle   = () => getFloatStyle(convFloatLeft, convFloatTop, convWidth, "conversations");
-  const getSchedFloatStyle = () => getFloatStyle(schedFloatLeft, schedFloatTop, schedWidth, "schedule");
-  const getPopFloatStyle   = () => getFloatStyle(popFloatLeft, popFloatTop, popWidth, "screenpop");
 
-  const notifPanel = notifMounted ? (
-    <AgentNotifications
-      ref={notifPanelRef}
-      notifications={notifications}
-      draggableVariant={notifVariant}
-      onVariantChange={handleNotifVariantChange}
-      onWidthChange={setNotifWidth}
-      onResizeStateChange={setNotifIsResizing}
-      onInteract={() => setTopPanel("notif")}
-      onMarkAllRead={() => setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))}
-      onClearAll={() => setNotifications([])}
-      onDismiss={(id: string) => setNotifications((prev) => prev.filter((n) => n.id !== id))}
-      onNotificationClick={(n: AgentNotification) =>
-        setNotifications((prev) => prev.map((i) => i.id === n.id ? { ...i, read: true } : i))
-      }
-      onClose={() => setNotifOpen(false)}
-      defaultWidth={notifWidth}
-      height={notifHeight}
-    />
-  ) : null;
+  // ── Content for each of the five buttons ──
+  // Ask AI's and Notifications' real content — same `useAiPanelContent`/
+  // `useAgentNotificationsContent` hooks `AiPanel`/`AgentNotifications`
+  // call internally (ai-panel.tsx/agent-notifications.tsx in lyra-ui) — so
+  // this app gets their actual bodies, not a reimplemented copy. Called
+  // unconditionally every render (Rules of Hooks) regardless of whether
+  // that content is the one currently showing.
+  const aiContent = useAiPanelContent({
+    userName: "John",
+    suggestions: [
+      { id: "1", label: "Summarise this contact's history" },
+      { id: "2", label: "Suggest a response to the customer" },
+      { id: "3", label: "What changed since yesterday?" },
+    ],
+  });
+  const notifContent = useAgentNotificationsContent({
+    notifications,
+    onMarkAllRead: () => setNotifications((prev) => prev.map((n) => ({ ...n, read: true }))),
+    onClearAll: () => setNotifications([]),
+    onDismiss: (id: string) => setNotifications((prev) => prev.filter((n) => n.id !== id)),
+    onNotificationClick: (n: AgentNotification) =>
+      setNotifications((prev) => prev.map((i) => i.id === n.id ? { ...i, read: true } : i)),
+  });
+  // Conversations/Schedule — no bespoke component (same blank empty-state
+  // `DraggablePanel` itself defaults to when given no children).
+  const blankPanelContent = (title: string): EmbeddablePanelContent => ({
+    title,
+    body: (
+      <div className="overflow-y-auto flex-1 flex items-center justify-center p-4">
+        <p className="lyra-body-md text-lyra-fg-disabled text-center">Nothing here yet.</p>
+      </div>
+    ),
+  });
+  // Screen Pop — same blank body, plus a Select (which external app to pop
+  // the current contact/record into) in `headerContent` (fixed above the
+  // divider, alongside the title row) rather than the scrollable body, so
+  // it stays put — no `label` since the field sits in the header, not a
+  // body form, where a label would be redundant.
+  const screenPopContent: EmbeddablePanelContent = {
+    title: "Screen Pop",
+    headerContent: (
+      <Select
+        placeholder="Select an app..."
+        options={SCREEN_POP_APPS}
+        value={screenPopApp}
+        onValueChange={setScreenPopApp}
+      />
+    ),
+    body: (
+      <div className="overflow-y-auto flex-1 flex items-center justify-center p-4">
+        <p className="lyra-body-md text-lyra-fg-disabled text-center">Nothing here yet.</p>
+      </div>
+    ),
+  };
+  const contentByPanelKey: Record<PanelKey, EmbeddablePanelContent> = {
+    ai: aiContent,
+    notif: notifContent,
+    conversations: blankPanelContent("Conversations"),
+    schedule: blankPanelContent("Schedule"),
+    screenpop: screenPopContent,
+  };
+  const activePanelContent = activePanelKey ? contentByPanelKey[activePanelKey] : null;
 
-  const aiPanel = aiMounted ? (
-    <AiPanel
-      ref={aiPanelRef}
-      draggable
-      draggableVariant={aiVariant}
-      defaultDraggableWidth={aiWidth}
-      defaultDraggableHeight={aiHeight}
-      onVariantChange={handleAiVariantChange}
-      onWidthChange={setAiWidth}
-      onResizeStateChange={setAiIsResizing}
-      onInteract={() => setTopPanel("ai")}
-      userName="John"
-      suggestions={[
-        { id: "1", label: "Summarise this contact's history" },
-        { id: "2", label: "Suggest a response to the customer" },
-        { id: "3", label: "What changed since yesterday?" },
-      ]}
-      onClose={() => setAiPanelOpen(false)}
-      className={aiVariant === "docked" ? "h-full" : undefined}
-    />
-  ) : null;
+  // Clicking a button: re-clicking the CURRENTLY showing one closes the
+  // shared container outright. Otherwise, if it's closed, open it docked
+  // (see `panelVariant`'s own doc comment above); if it's already open
+  // showing a DIFFERENT key, only `activePanelKey` changes — the container
+  // itself never resizes, repositions, or re-animates open+close, only its
+  // title/body content does.
+  const handlePanelButtonClick = (key: PanelKey) => () => {
+    if (panelOpen && activePanelKey === key) {
+      setPanelOpen(false);
+      return;
+    }
+    if (!panelOpen) {
+      setPanelVariant("docked");
+      setPanelOpen(true);
+    }
+    setActivePanelKey(key);
+  };
 
-  // Conversations/Schedule — blank `DraggablePanel` (lyra-ui), same shape as
-  // AI/Notifications above but with no content of its own yet.
-  const conversationsPanel = convMounted ? (
-    <DraggablePanel
-      ref={convPanelRef}
-      title="Conversations"
-      draggableVariant={convVariant}
-      onVariantChange={handleConvVariantChange}
-      defaultWidth={convWidth}
-      height={convHeight}
-      onWidthChange={setConvWidth}
-      onResizeStateChange={setConvIsResizing}
-      onInteract={() => setTopPanel("conversations")}
-      onClose={() => setConvOpen(false)}
-      className={convVariant === "docked" ? "h-full" : undefined}
-    />
-  ) : null;
-
-  const schedulePanel = schedMounted ? (
-    <DraggablePanel
-      ref={schedPanelRef}
-      title="Schedule"
-      draggableVariant={schedVariant}
-      onVariantChange={handleSchedVariantChange}
-      defaultWidth={schedWidth}
-      height={schedHeight}
-      onWidthChange={setSchedWidth}
-      onResizeStateChange={setSchedIsResizing}
-      onInteract={() => setTopPanel("schedule")}
-      onClose={() => setSchedOpen(false)}
-      className={schedVariant === "docked" ? "h-full" : undefined}
-    />
-  ) : null;
-
-  // Screen Pop — `DraggablePanel` (lyra-ui), same shape as
-  // Conversations/Schedule above, with a Select to choose which external
-  // app to pop the current contact/record into. The Select lives in
-  // `headerContent` (fixed above the divider, alongside the title row)
-  // rather than the scrollable body, so it stays put — no `label` since
-  // the field sits in the header, not a body form, where a label would be
-  // redundant.
-  const screenPopPanel = popMounted ? (
-    <DraggablePanel
-      ref={popPanelRef}
-      title="Screen Pop"
-      draggableVariant={popVariant}
-      onVariantChange={handlePopVariantChange}
-      defaultWidth={popWidth}
-      height={popHeight}
-      onWidthChange={setPopWidth}
-      onResizeStateChange={setPopIsResizing}
-      onInteract={() => setTopPanel("screenpop")}
-      onClose={() => setPopOpen(false)}
-      className={popVariant === "docked" ? "h-full" : undefined}
-      headerContent={
-        <Select
-          placeholder="Select an app..."
-          options={SCREEN_POP_APPS}
-          value={screenPopApp}
-          onValueChange={setScreenPopApp}
-        />
-      }
-    />
+  // The one shared `Draggable` — its header (icon/actions/title) and body
+  // swap to whichever button's content is active; the container itself
+  // (variant/width/position) never does.
+  const sharedPanel = panelMounted && activePanelContent ? (
+    <Draggable
+      ref={panelRef}
+      variant={panelVariant}
+      defaultWidth={panelWidth}
+      defaultHeight={panelHeight}
+      minWidth={280}
+      minHeight={400}
+      onVariantChange={handlePanelVariantChange}
+      onWidthChange={setPanelWidth}
+      onResizeStateChange={setPanelIsResizing}
+      className={cn(
+        "rounded-lyra-lg border border-lyra-border-subtle bg-lyra-bg-surface-base",
+        panelVariant === "float" ? "shadow-lg" : "h-full"
+      )}
+      renderHeaderControls={({ gripProps, dockButtonProps, dockIcon, variant: dVariant }) => (
+        <>
+          <ContainerHeader
+            title={activePanelContent.title}
+            titleBadge={activePanelContent.titleBadge}
+            titleClassName={activePanelContent.titleClassName}
+            icon={
+              dVariant === "float"
+                ? <div {...gripProps}><GripVertical className="h-4 w-4" strokeWidth={1.5} /></div>
+                : activePanelContent.dockedIcon
+            }
+            bordered={!activePanelContent.headerContent}
+            actions={
+              <>
+                {activePanelContent.headerActions}
+                <Tooltip content={dockButtonProps["aria-label"]} placement="bottom" asLabel>
+                  <button
+                    {...dockButtonProps}
+                    className="flex h-8 w-8 items-center justify-center rounded-lyra-sm text-lyra-fg-secondary hover:bg-lyra-state-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus"
+                  >
+                    {dockIcon}
+                  </button>
+                </Tooltip>
+              </>
+            }
+            onClose={() => setPanelOpen(false)}
+          />
+          {activePanelContent.headerContent && (
+            <div className="shrink-0 px-4 pb-3 border-b border-lyra-border-subtle">
+              {activePanelContent.headerContent}
+            </div>
+          )}
+        </>
+      )}
+    >
+      {activePanelContent.body}
+    </Draggable>
   ) : null;
 
   return (
@@ -4168,50 +4122,50 @@ export function AgentNextGenPage({
             <ActionIconButton
               size="xl"
               title="Screen Pop"
-              aria-expanded={popOpen}
-              onClick={() => setPopOpen((v) => !v)}
-              className={popOpen ? "bg-lyra-state-hover" : undefined}
+              aria-expanded={panelOpen && activePanelKey === "screenpop"}
+              onClick={handlePanelButtonClick("screenpop")}
+              className={panelOpen && activePanelKey === "screenpop" ? "bg-lyra-state-hover" : undefined}
             >
               <MonitorUp className="h-5 w-5" strokeWidth={1.5} />
             </ActionIconButton>
             <ActionIconButton
               size="xl"
               title="Conversations"
-              aria-expanded={convOpen}
-              onClick={() => setConvOpen((v) => !v)}
-              className={convOpen ? "bg-lyra-state-hover" : undefined}
+              aria-expanded={panelOpen && activePanelKey === "conversations"}
+              onClick={handlePanelButtonClick("conversations")}
+              className={panelOpen && activePanelKey === "conversations" ? "bg-lyra-state-hover" : undefined}
             >
               <MessageSquare className="h-5 w-5" strokeWidth={1.5} />
             </ActionIconButton>
             <ActionIconButton
               size="xl"
               title="Schedule"
-              aria-expanded={schedOpen}
-              onClick={() => setSchedOpen((v) => !v)}
-              className={schedOpen ? "bg-lyra-state-hover" : undefined}
+              aria-expanded={panelOpen && activePanelKey === "schedule"}
+              onClick={handlePanelButtonClick("schedule")}
+              className={panelOpen && activePanelKey === "schedule" ? "bg-lyra-state-hover" : undefined}
             >
               <CalendarDays className="h-5 w-5" strokeWidth={1.5} />
             </ActionIconButton>
             <NotificationsBell
               notifications={notifications}
-              open={notifOpen}
-              onOpenChange={setNotifOpen}
+              open={panelOpen && activePanelKey === "notif"}
+              onOpenChange={() => handlePanelButtonClick("notif")()}
               renderPanel={false}
             />
             {/* Sole "Ask AI" entry point — the PageHeader labeled button
                 (Desk dashboard and the record-page header) was removed so
-                this AppHeader icon is the only trigger for `aiPanelOpen`/
-                `AiPanel` now. Renders lyra-ui's exported `AiSparkleIcon` —
-                the same solid-color sparkle mark `AgentNextGenTemplate.
-                stories.tsx` and `lyra-ux-templates`' `AgentNextGenPage.tsx`
-                both use here — via `ActionIconButton` (44px, matching every
-                other icon button in this row now). */}
+                this AppHeader icon is the only trigger for the shared
+                panel's Ask AI content now. Renders lyra-ui's exported
+                `AiSparkleIcon` — the same solid-color sparkle mark
+                `AgentNextGenTemplate.stories.tsx` and `lyra-ux-templates`'
+                `AgentNextGenPage.tsx` both use here — via `ActionIconButton`
+                (44px, matching every other icon button in this row now). */}
             <ActionIconButton
               size="xl"
               title="Ask AI"
-              aria-expanded={aiPanelOpen}
-              onClick={() => setAiPanelOpen((v) => !v)}
-              className={aiPanelOpen ? "bg-lyra-state-hover" : undefined}
+              aria-expanded={panelOpen && activePanelKey === "ai"}
+              onClick={handlePanelButtonClick("ai")}
+              className={panelOpen && activePanelKey === "ai" ? "bg-lyra-state-hover" : undefined}
             >
               <AiSparkleIcon />
             </ActionIconButton>
@@ -4772,199 +4726,49 @@ export function AgentNextGenPage({
 
           </Container>
 
-          {/* Notifications — float (CSS transitions, not keyframe animations — avoids compositor fill-mode flash) */}
-          {notifVariant === "float" && notifMounted && (
+          {/* Shared single-container panel — float (CSS transitions, not
+              keyframe animations — avoids compositor fill-mode flash).
+              Was five near-identical blocks (one per panel); with only one
+              physical container now, there's only one. */}
+          {panelVariant === "float" && panelMounted && (
             <div
               style={{
-                ...getNotifFloatStyle(),
+                ...getPanelFloatStyle(),
                 pointerEvents: "none",
-                visibility: notifState === "closed" ? "hidden" : "visible",
-                opacity: notifState === "open" ? 1 : 0,
-                transform: notifState === "open" ? "translateY(0)" : "translateY(-8px)",
-                transition: notifState === "open"
+                visibility: panelState === "closed" ? "hidden" : "visible",
+                opacity: panelState === "open" ? 1 : 0,
+                transform: panelState === "open" ? "translateY(0)" : "translateY(-8px)",
+                transition: panelState === "open"
                   ? "opacity 150ms ease, transform 150ms ease"
                   : "opacity 100ms ease, transform 100ms ease",
               }}
             >
-              {notifPanel}
-            </div>
-          )}
-
-          {/* AI Panel — float (same CSS transition pattern as Notifications) */}
-          {aiVariant === "float" && aiMounted && (
-            <div
-              style={{
-                ...getAiFloatStyle(),
-                pointerEvents: "none",
-                visibility: aiState === "closed" ? "hidden" : "visible",
-                opacity: aiState === "open" ? 1 : 0,
-                transform: aiState === "open" ? "translateY(0)" : "translateY(-8px)",
-                transition: aiState === "open"
-                  ? "opacity 150ms ease, transform 150ms ease"
-                  : "opacity 100ms ease, transform 100ms ease",
-              }}
-            >
-              {aiPanel}
-            </div>
-          )}
-
-          {/* Conversations — float (same CSS transition pattern as Notifications/AI) */}
-          {convVariant === "float" && convMounted && (
-            <div
-              style={{
-                ...getConvFloatStyle(),
-                pointerEvents: "none",
-                visibility: convState === "closed" ? "hidden" : "visible",
-                opacity: convState === "open" ? 1 : 0,
-                transform: convState === "open" ? "translateY(0)" : "translateY(-8px)",
-                transition: convState === "open"
-                  ? "opacity 150ms ease, transform 150ms ease"
-                  : "opacity 100ms ease, transform 100ms ease",
-              }}
-            >
-              {conversationsPanel}
-            </div>
-          )}
-
-          {/* Schedule — float (same CSS transition pattern as Notifications/AI) */}
-          {schedVariant === "float" && schedMounted && (
-            <div
-              style={{
-                ...getSchedFloatStyle(),
-                pointerEvents: "none",
-                visibility: schedState === "closed" ? "hidden" : "visible",
-                opacity: schedState === "open" ? 1 : 0,
-                transform: schedState === "open" ? "translateY(0)" : "translateY(-8px)",
-                transition: schedState === "open"
-                  ? "opacity 150ms ease, transform 150ms ease"
-                  : "opacity 100ms ease, transform 100ms ease",
-              }}
-            >
-              {schedulePanel}
-            </div>
-          )}
-
-          {/* Screen Pop — float (same CSS transition pattern as Notifications/AI) */}
-          {popVariant === "float" && popMounted && (
-            <div
-              style={{
-                ...getPopFloatStyle(),
-                pointerEvents: "none",
-                visibility: popState === "closed" ? "hidden" : "visible",
-                opacity: popState === "open" ? 1 : 0,
-                transform: popState === "open" ? "translateY(0)" : "translateY(-8px)",
-                transition: popState === "open"
-                  ? "opacity 150ms ease, transform 150ms ease"
-                  : "opacity 100ms ease, transform 100ms ease",
-              }}
-            >
-              {screenPopPanel}
+              {sharedPanel}
             </div>
           )}
 
         </div>
 
-        {/* Notifications — docked (sibling of containerRef so flex layout keeps it in-bounds) */}
-        {notifVariant === "docked" && (
+        {/* Shared single-container panel — docked (sibling of containerRef
+            so flex layout keeps it in-bounds). Was five near-identical
+            blocks (one per panel); with only one physical container now,
+            there's only one. */}
+        {panelVariant === "docked" && (
           <div className="pb-3" style={{
-            width: notifState === "open" ? notifWidth : 0,
-            marginRight: notifState === "open" ? 12 : 0,
+            width: panelState === "open" ? panelWidth : 0,
+            marginRight: panelState === "open" ? 12 : 0,
             overflow: "hidden",
             flexShrink: 0,
-            transition: notifIsResizing ? "none" : "width 250ms cubic-bezier(0.4, 0, 0.2, 1)",
+            transition: panelIsResizing ? "none" : "width 250ms cubic-bezier(0.4, 0, 0.2, 1)",
           }}>
             <div
               className="h-full animate-in fade-in-0 duration-150"
               style={{
-                width: notifWidth,
-                display: notifState === "open" ? "block" : "none",
+                width: panelWidth,
+                display: panelState === "open" ? "block" : "none",
               }}
             >
-              {notifPanel}
-            </div>
-          </div>
-        )}
-
-        {/* AI Panel — docked (sibling of containerRef so flex layout keeps it in-bounds) */}
-        {aiVariant === "docked" && (
-          <div className="pb-3" style={{
-            width: aiState === "open" ? aiWidth : 0,
-            marginRight: aiState === "open" ? 12 : 0,
-            overflow: "hidden",
-            flexShrink: 0,
-            transition: aiIsResizing ? "none" : "width 250ms cubic-bezier(0.4, 0, 0.2, 1)",
-          }}>
-            <div
-              className="h-full animate-in fade-in-0 duration-150"
-              style={{
-                width: aiWidth,
-                display: aiState === "open" ? "block" : "none",
-              }}
-            >
-              {aiPanel}
-            </div>
-          </div>
-        )}
-
-        {/* Conversations — docked (sibling of containerRef so flex layout keeps it in-bounds) */}
-        {convVariant === "docked" && (
-          <div className="pb-3" style={{
-            width: convState === "open" ? convWidth : 0,
-            marginRight: convState === "open" ? 12 : 0,
-            overflow: "hidden",
-            flexShrink: 0,
-            transition: convIsResizing ? "none" : "width 250ms cubic-bezier(0.4, 0, 0.2, 1)",
-          }}>
-            <div
-              className="h-full animate-in fade-in-0 duration-150"
-              style={{
-                width: convWidth,
-                display: convState === "open" ? "block" : "none",
-              }}
-            >
-              {conversationsPanel}
-            </div>
-          </div>
-        )}
-
-        {/* Schedule — docked (sibling of containerRef so flex layout keeps it in-bounds) */}
-        {schedVariant === "docked" && (
-          <div className="pb-3" style={{
-            width: schedState === "open" ? schedWidth : 0,
-            marginRight: schedState === "open" ? 12 : 0,
-            overflow: "hidden",
-            flexShrink: 0,
-            transition: schedIsResizing ? "none" : "width 250ms cubic-bezier(0.4, 0, 0.2, 1)",
-          }}>
-            <div
-              className="h-full animate-in fade-in-0 duration-150"
-              style={{
-                width: schedWidth,
-                display: schedState === "open" ? "block" : "none",
-              }}
-            >
-              {schedulePanel}
-            </div>
-          </div>
-        )}
-
-        {/* Screen Pop — docked (sibling of containerRef so flex layout keeps it in-bounds) */}
-        {popVariant === "docked" && (
-          <div className="pb-3" style={{
-            width: popState === "open" ? popWidth : 0,
-            marginRight: popState === "open" ? 12 : 0,
-            overflow: "hidden",
-            flexShrink: 0,
-            transition: popIsResizing ? "none" : "width 250ms cubic-bezier(0.4, 0, 0.2, 1)",
-          }}>
-            <div
-              className="h-full animate-in fade-in-0 duration-150"
-              style={{
-                width: popWidth,
-                display: popState === "open" ? "block" : "none",
-              }}
-            >
-              {screenPopPanel}
+              {sharedPanel}
             </div>
           </div>
         )}
