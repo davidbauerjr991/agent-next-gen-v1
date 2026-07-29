@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import * as PopoverPrimitive from "@radix-ui/react-popover";
+import * as AccordionPrimitive from "@radix-ui/react-accordion";
 import { cn } from "@/lib/utils";
 import {
   AppHeader,
@@ -46,7 +47,8 @@ import {
   AgentWelcomeMessage,
   TabList,
   Tab,
-  ChannelTab,
+  ChannelToggle,
+  ChannelToggleGroup,
   Popover,
   RadioGroup,
   RadioGroupItem,
@@ -280,10 +282,10 @@ interface TrackedChannel {
    *  `preview`/`skillLabel` above. Kept separate from `value` since `value`
    *  has to stay the raw address for the `openChannelAddresses` dedup match
    *  in "Select Phone"/etc. to keep working. Shown on this channel's
-   *  `ChannelTab` (see the `activeInteraction` block below) as "SMS |
-   *  (456) 383-3329" — undefined just means the tab shows icon + type label
-   *  with no address (e.g. a redialed voice call, which has no stored
-   *  number at all). */
+   *  `ChannelToggle` (see the `activeInteraction` block below) as "SMS |
+   *  (456) 383-3329" — undefined just means the toggle shows icon + type
+   *  label with no address (e.g. a redialed voice call, which has no
+   *  stored number at all). */
   addressLabel?: string;
   /** Whether the customer has sent a message on this channel that the agent
    *  hasn't replied to yet — drives the row's red/critical chip+clock
@@ -297,8 +299,8 @@ interface TrackedChannel {
    *  permanently red" bug this replaced. */
   awaitingResponse?: boolean;
   /** Total message count for this channel's conversation, shown only on this
-   *  channel's `ChannelTab` tooltip (see the `activeInteraction` block
-   *  below), never on the tab face itself. There's no real message store in
+   *  channel's `ChannelToggle` tooltip (see the `activeInteraction` block
+   *  below), never on the toggle face itself. There's no real message store in
    *  this demo, so `handleStartCall`/`handleQuickDial`/`handleRedial` just
    *  set this directly at channel-creation time: `0` for a freshly started
    *  outbound conversation on any digital channel (the tooltip reads "0
@@ -312,7 +314,7 @@ interface TrackedChannel {
    *  the page header): one record can have several channels open, each its
    *  own conversation with its own id. Synthesized via
    *  `generateInteractionId()` at channel-creation time (for every channel
-   *  type, including voice); shown on this channel's `ChannelTab` tooltip as
+   *  type, including voice); shown on this channel's `ChannelToggle` tooltip as
    *  "#{interactionId}". */
   interactionId?: string;
 }
@@ -336,7 +338,7 @@ interface ActiveInteraction {
   channels: TrackedChannel[];
   /** Which open channel is "current" — shared source of truth between this
    *  interaction's `InteractionNavItem` card (its `currentChannelKey` prop)
-   *  and its `ChannelTab` bar (each tab's `active`), so clicking either one
+   *  and its `ChannelToggle` bar (each toggle's `active`), so clicking either one
    *  updates the other. A `TrackedChannel.id` (falls back to the last
    *  channel's own id when unset — see the `?? mostRecentId` reads below —
    *  same default a fresh interaction already had before this field
@@ -1685,12 +1687,27 @@ function InteractionsTable({ interactions }: { interactions: ContactInteraction[
 
 /* ── InteractionTranscript ──
    The conversation-transcript body for an active interaction's detail page,
-   shown below the ChannelTab TabList (replaces the empty placeholder div
-   that used to sit there — see the `activeInteraction` branch above). Shows
-   one fixed mock conversation (Sarah Chen ↔ John Smith, case
-   CTX-20250722-08841) for every active interaction rather than a real
-   per-interaction transcript — this is a UI prototype of the transcript
-   layout itself, not a case-data integration.
+   shown below the page header — whose own `titleSuffix` slot holds the
+   `ChannelToggle` row now, not a separate row beneath it (replaces the
+   empty placeholder div that used to sit there — see the `activeInteraction`
+   branch above). Shows
+   one fixed mock conversation (Liam Davis ↔ John Smith) split across two
+   fixed mock sessions (`TRANSCRIPT_SESSIONS`) for every active interaction
+   rather than a real per-interaction transcript — this is a UI prototype of
+   the transcript layout itself, not a case-data integration.
+
+   Broken into sessions (each a `# <case id> · <date>` separator — see
+   `TranscriptSessionSeparator` — followed by that session's own messages)
+   rather than one flat message list, per explicit request: a single
+   interaction can span more than one contact record (a follow-up thread
+   days later, a callback), and each one needs its own separator that
+   expands in place to a "Session Details" summary (`TranscriptSession
+   Details`) without disturbing the others. Each separator is `sticky
+   top-0`, so scrolling through a session keeps its separator pinned at the
+   top until the next session's own separator reaches the top and takes
+   over — plain CSS sticky-header stacking, no scroll listener — see that
+   component's own doc comment for why source order alone is enough to get
+   this behavior.
 
    Deliberately hand-built instead of composed from lyra-ui's
    `ConversationMessage`: that component's "agent" variant doesn't produce
@@ -1719,101 +1736,525 @@ interface TranscriptMessage {
   tags?: TranscriptTag[];
 }
 
-const TRANSCRIPT_CASE_ID = "CTX-20250722-08841";
-const TRANSCRIPT_CASE_DATE = "July 22, 2025";
+/* Each `TranscriptSession` is one contact record within the interaction —
+   the reference screenshot's "# CTX-20250722-08841 · July 22, 2025 ⌄"
+   separator plus the "Session Details" panel it expands to (Contact ID /
+   Date / Start / End / Channel / Skill / Agent / Status). A single
+   interaction can span more than one session (a callback, a follow-up
+   message thread days later, etc.) — grouping `TranscriptMessage[]` under
+   a session rather than one flat list is what lets the transcript render a
+   separator between each and let every one collapse/expand independently.
+   Two mock sessions here (a closed first contact, then a shorter follow-up)
+   are enough to demonstrate the separator-per-session + sticky-stacking
+   behavior; still a UI prototype, not real per-interaction session data. */
+interface TranscriptSession {
+  id: string;
+  caseId: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  channel: string;
+  skill: string;
+  agent: string;
+  status: string;
+  messages: TranscriptMessage[];
+}
 
-const TRANSCRIPT_MESSAGES: TranscriptMessage[] = [
+const TRANSCRIPT_SESSIONS: TranscriptSession[] = [
   {
-    id: "m1",
-    sender: "customer",
-    name: "Sarah Chen",
-    initials: "SC",
-    timestamp: "9:14 AM",
-    text: "Hi, I'm having trouble with my recent invoice — it looks like I was charged twice for the same service.",
-    tags: [
-      { id: "m1-complain", label: "Complain", variant: "critical" },
-      { id: "m1-help", label: "Help", variant: "info" },
+    id: "session-1",
+    caseId: "CTX-20250722-08841",
+    date: "July 22, 2025",
+    startTime: "9:13 AM",
+    endTime: "9:27 AM",
+    channel: "SMS",
+    skill: "SMS Support",
+    agent: "John Smith",
+    status: "Resolved",
+    messages: [
+      {
+        id: "m1",
+        sender: "customer",
+        name: "Liam Davis",
+        initials: "LD",
+        timestamp: "9:14 AM",
+        text: "Hi, I'm having trouble with my recent invoice — it looks like I was charged twice for the same service.",
+      },
+      {
+        id: "m2",
+        sender: "agent",
+        name: "John Smith",
+        initials: "JS",
+        timestamp: "9:15 AM",
+        text: "Hi! Thanks for reaching out. I'm sorry to hear that — let me pull up your account right away.",
+      },
+      {
+        id: "m3",
+        sender: "agent",
+        name: "John Smith",
+        initials: "JS",
+        timestamp: "9:17 AM",
+        text: "I can see the duplicate charge from July 18th. I'll submit a refund request for the second charge now.",
+      },
+      {
+        id: "m4",
+        sender: "customer",
+        name: "Liam Davis",
+        initials: "LD",
+        timestamp: "9:18 AM",
+        text: "Thank you! How long will it take?",
+        tags: [{ id: "m4-billing", label: "Billing", variant: "default" }],
+      },
+      {
+        id: "m5",
+        sender: "agent",
+        name: "John Smith",
+        initials: "JS",
+        timestamp: "9:20 AM",
+        text: "Refunds typically appear within 3–5 business days. You'll also receive a confirmation email shortly.",
+      },
+      {
+        id: "m6",
+        sender: "customer",
+        name: "Liam Davis",
+        initials: "LD",
+        timestamp: "9:22 AM",
+        text: "Great, sounds good. One more thing — can I also update the billing email on file?",
+      },
+      {
+        id: "m7",
+        sender: "agent",
+        name: "John Smith",
+        initials: "JS",
+        timestamp: "9:23 AM",
+        text: "Of course! What would you like to change it to?",
+      },
+      {
+        id: "m8",
+        sender: "customer",
+        name: "Liam Davis",
+        initials: "LD",
+        timestamp: "9:24 AM",
+        text: "Please update it to: sarah.chen@example.com",
+      },
+      {
+        id: "m9",
+        sender: "agent",
+        name: "John Smith",
+        initials: "JS",
+        timestamp: "9:25 AM",
+        text: "Done! Your billing email has been updated. Is there anything else I can help with?",
+      },
+      {
+        id: "m10",
+        sender: "customer",
+        name: "Liam Davis",
+        initials: "LD",
+        timestamp: "9:26 AM",
+        text: "No, that's all. Thanks for your help!",
+      },
     ],
   },
   {
-    id: "m2",
-    sender: "agent",
-    name: "John Smith",
-    initials: "JS",
-    timestamp: "9:15 AM",
-    text: "Hi! Thanks for reaching out. I'm sorry to hear that — let me pull up your account right away.",
-  },
-  {
-    id: "m3",
-    sender: "agent",
-    name: "John Smith",
-    initials: "JS",
-    timestamp: "9:17 AM",
-    text: "I can see the duplicate charge from July 18th. I'll submit a refund request for the second charge now.",
-  },
-  {
-    id: "m4",
-    sender: "customer",
-    name: "Sarah Chen",
-    initials: "SC",
-    timestamp: "9:18 AM",
-    text: "Thank you! How long will it take?",
-    tags: [
-      { id: "m4-praise", label: "Praise", variant: "success" },
-      { id: "m4-help", label: "Help", variant: "info" },
+    id: "session-2",
+    caseId: "CTX-20250723-09234",
+    date: "July 23, 2025",
+    startTime: "2:04 PM",
+    endTime: "2:12 PM",
+    channel: "SMS",
+    skill: "SMS Support",
+    agent: "John Smith",
+    status: "Resolved",
+    messages: [
+      {
+        id: "m11",
+        sender: "customer",
+        name: "Liam Davis",
+        initials: "LD",
+        timestamp: "2:05 PM",
+        text: "Hi again — the refund still hasn't appeared on my account.",
+      },
+      {
+        id: "m12",
+        sender: "agent",
+        name: "John Smith",
+        initials: "JS",
+        timestamp: "2:08 PM",
+        text: "Hi! I apologize for the delay. I can see the refund was processed on our end — it may take until the end of the business day to appear.",
+      },
+      {
+        id: "m13",
+        sender: "customer",
+        name: "Liam Davis",
+        initials: "LD",
+        timestamp: "2:10 PM",
+        text: "Okay, I'll check again tomorrow.",
+      },
+      {
+        id: "m14",
+        sender: "agent",
+        name: "John Smith",
+        initials: "JS",
+        timestamp: "2:11 PM",
+        text: "Sounds good! Feel free to reach back out if you don't see it by tomorrow afternoon.",
+      },
     ],
-  },
-  {
-    id: "m5",
-    sender: "agent",
-    name: "John Smith",
-    initials: "JS",
-    timestamp: "9:20 AM",
-    text: "Refunds typically appear within 3–5 business days. You'll also receive a confirmation email shortly.",
-  },
-  {
-    id: "m6",
-    sender: "customer",
-    name: "Sarah Chen",
-    initials: "SC",
-    timestamp: "9:22 AM",
-    text: "Great, sounds good. One more thing — can I also update the billing email on file?",
   },
 ];
 
 // Quick-add options offered from a message's hover "Tags" action — matches
-// the app's real tag vocabulary (Complain/Help/Praise/Share), not an
-// invented set, so a picked tag reads the same as the ones seeded on m1/m4.
-// Deliberately not purple/teal/pink — CONTRIBUTING.md reserves those three
-// Tag variants for channel-type coloring specifically.
+// the app's real tag vocabulary (Complain/Help/Praise/Share/Billing), not
+// an invented set, so a picked tag reads the same as the one seeded on m4.
+// "Billing" (topic label, not sentiment) reuses the same neutral `default`
+// variant "Share" already established for a non-sentiment tag. Deliberately
+// not purple/teal/pink — CONTRIBUTING.md reserves those three Tag variants
+// for channel-type coloring specifically.
 const QUICK_TAG_OPTIONS: Omit<TranscriptTag, "id">[] = [
   { label: "Complain", variant: "critical" },
   { label: "Help", variant: "info" },
   { label: "Praise", variant: "success" },
   { label: "Share", variant: "default" },
+  { label: "Billing", variant: "default" },
 ];
 
-function InteractionTranscript() {
-  // Local, per-message tag state — removing/adding a tag on one message
-  // shouldn't touch any other message's tags, so this isn't a flat array.
-  const [messages, setMessages] = useState<TranscriptMessage[]>(TRANSCRIPT_MESSAGES);
-  // Which message's "Add tag" popover is open — at most one at a time.
-  const [tagPickerOpenId, setTagPickerOpenId] = useState<string | null>(null);
+/* ── TranscriptMessageBubble ──
+   One customer/agent bubble, extracted out of the old flat-list
+   `InteractionTranscript` so it can be looped once per `TranscriptSession`
+   instead of once for the whole (now session-grouped) transcript. Tag
+   add/remove and the copy action are still owned by `InteractionTranscript`
+   (tag state lives per-session there) — this component is just the row
+   markup, taking the handlers it needs as props. Unchanged from the
+   original inline JSX otherwise. */
+function TranscriptMessageBubble({
+  message,
+  tagPickerOpen,
+  onTagPickerOpenChange,
+  onAddTag,
+  onRemoveTag,
+  onCopy,
+}: {
+  message: TranscriptMessage;
+  tagPickerOpen: boolean;
+  onTagPickerOpenChange: (open: boolean) => void;
+  onAddTag: (option: Omit<TranscriptTag, "id">) => void;
+  onRemoveTag: (tagId: string) => void;
+  onCopy: () => void;
+}) {
+  const isCustomer = message.sender === "customer";
+  return (
+    <div className={cn("flex flex-col", isCustomer ? "items-start" : "items-end")}>
+      <div className={cn("flex max-w-[70%] items-start gap-2", isCustomer ? "flex-row" : "flex-row-reverse")}>
+        <span
+          className={cn(
+            "flex h-7 w-7 shrink-0 items-center justify-center rounded-full lyra-body-sm-emphasis lyra-transcript-avatar",
+            isCustomer
+              ? "bg-lyra-accent-green-soft text-lyra-accent-green-strong"
+              : "bg-lyra-bg-primary text-lyra-fg-on-primary"
+          )}
+          aria-hidden="true"
+        >
+          {message.initials}
+        </span>
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className={cn("lyra-body-sm text-lyra-fg-secondary px-1", !isCustomer && "text-right")}>
+            {message.name}
+          </span>
+          <div className={cn("group flex items-end gap-1.5", isCustomer ? "flex-row" : "flex-row-reverse")}>
+            <div
+              className={cn(
+                "rounded-lyra-lg px-4 py-3 border border-transparent",
+                isCustomer ? "rounded-tl-none bg-lyra-state-hover" : "rounded-tr-none"
+              )}
+              style={!isCustomer ? { backgroundColor: "var(--lyra-color-bg-conversation-user)" } : undefined}
+            >
+              <p className="lyra-body-md text-lyra-fg-default">{message.text}</p>
+              <span className="mt-2 block lyra-body-sm text-lyra-fg-secondary">{message.timestamp}</span>
+            </div>
+            {/* Copy / Add tag — hidden until the bubble row is hovered,
+                sitting just outside the bubble (right for customer bubbles,
+                left for agent bubbles), bottom-aligned with it rather than
+                overlapping it. */}
+            <div
+              className={cn(
+                "mb-0.5 flex shrink-0 items-center gap-0.5 rounded-lyra-md border border-lyra-border-subtle bg-lyra-bg-surface-base p-0.5 opacity-0 shadow-sm transition-opacity group-hover:opacity-100",
+                // The "Add tag" popover renders in a portal, so moving the
+                // pointer into it isn't hovering this row anymore —
+                // group-hover alone would fade the toolbar out from under
+                // an open popover. Force it visible whenever this
+                // message's picker is open.
+                tagPickerOpen && "opacity-100"
+              )}
+            >
+              <ActionIconButton size="sm" title="Copy message" onClick={onCopy}>
+                <Copy className="h-3.5 w-3.5" strokeWidth={1.5} />
+              </ActionIconButton>
+              <Popover
+                open={tagPickerOpen}
+                onOpenChange={onTagPickerOpenChange}
+                placement="bottom"
+                header={
+                  <PanelHeader
+                    title="Add tag"
+                    bordered={false}
+                    className="px-5 pb-0"
+                    onClose={() => onTagPickerOpenChange(false)}
+                  />
+                }
+                content={
+                  <div className="flex flex-col gap-1 py-2">
+                    {QUICK_TAG_OPTIONS.filter((opt) => !message.tags?.some((t) => t.label === opt.label)).map(
+                      (opt) => (
+                        <button
+                          key={opt.label}
+                          type="button"
+                          className="group flex items-center rounded-lyra-sm px-1 py-1 text-left"
+                          onClick={() => onAddTag(opt)}
+                        >
+                          {/* Hover feedback lives on the tag pill's own
+                              color (darkens slightly) instead of a gray row
+                              background behind it — the pill already
+                              carries the variant's color, so that's what
+                              should visibly react to hovering it.
+                              `brightness` works regardless of which variant
+                              color is in play, no per-variant hover class
+                              needed. */}
+                          <Tag
+                            label={opt.label}
+                            variant={opt.variant}
+                            shape="pill"
+                            className="transition-[filter] group-hover:brightness-95 dark:group-hover:brightness-125"
+                          />
+                        </button>
+                      )
+                    )}
+                    {QUICK_TAG_OPTIONS.every((opt) => message.tags?.some((t) => t.label === opt.label)) && (
+                      <span className="px-1 py-1 lyra-body-sm text-lyra-fg-secondary">All tags added</span>
+                    )}
+                  </div>
+                }
+              >
+                <ActionIconButton size="sm" title="Add tag">
+                  <Tags className="h-3.5 w-3.5" strokeWidth={1.5} />
+                </ActionIconButton>
+              </Popover>
+            </div>
+          </div>
+          {message.tags && message.tags.length > 0 && (
+            <div className={cn("mt-1 flex flex-wrap items-center gap-2", isCustomer ? "flex-row" : "flex-row-reverse")}>
+              {message.tags.map((tag) => (
+                <Tag key={tag.id} label={tag.label} variant={tag.variant} shape="pill" onRemove={() => onRemoveTag(tag.id)} />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-  const removeTag = (messageId: string, tagId: string) => {
-    setMessages((prev) =>
-      prev.map((m) => (m.id === messageId ? { ...m, tags: m.tags?.filter((t) => t.id !== tagId) } : m))
-    );
+/* ── TranscriptSessionDetails ──
+   The "Session Details" card a session separator expands to (reference
+   screenshot 2) — Contact ID/Date, Start/End, Channel/Skill, Agent/Status,
+   two fields per row. Uses lyra-ui's own documented "Label Horizontal"
+   pattern (`Input.stories.tsx`'s `LabelHorizontalWithSeparator` story: the
+   real `Label` atom on the left, a plain `lyra-body-md text-lyra-fg-
+   secondary` value span on the right, in one row) rather than `Input` —
+   `Input` always stacks its label *above* the field, which read as a
+   normal editable-looking form regardless of `readonly`, not the
+   horizontal label/value row the reference screenshot shows. Same pattern
+   minus that story's trailing `Separator` — explicitly no dividers between
+   rows here, this card is one glanceable block, not a divided list. Two
+   pairs per row via `.lyra-form-grid` (an existing lyra-tokens.css
+   container-query family, not a bare Tailwind `grid-cols-2`) under a
+   `lyra-form-grid-wrap` boundary, same mechanism `CustomerDetailTabContent`
+   uses for its own 2-up field rows.
+
+   Wrapped in the same neutral `rounded-lyra-md border border-lyra-border-
+   subtle bg-lyra-bg-control-subtle` container CONTRIBUTING.md's "Composing
+   panel body content" convention uses for a card-like block sitting inside
+   a body area — the Overview tab's own "Latest Interaction" accordion uses
+   the identical classes for the same reason (a block that reads as a
+   distinct card, not flush against the transcript's own background). */
+function TranscriptSessionDetails({ session }: { session: TranscriptSession }) {
+  const rows: Array<[string, string, string, string]> = [
+    ["Contact ID", session.caseId, "Date", session.date],
+    ["Start", session.startTime, "End", session.endTime],
+    ["Channel", session.channel, "Skill", session.skill],
+    ["Agent", session.agent, "Status", session.status],
+  ];
+  return (
+    <div className="flex flex-col gap-3 rounded-lyra-md border border-lyra-border-subtle bg-lyra-bg-control-subtle p-4 lyra-form-grid-wrap">
+      <h3 className="lyra-body-md-emphasis text-lyra-fg-default">Session Details</h3>
+      {rows.map(([label1, value1, label2, value2]) => (
+        <div key={label1} className="lyra-form-grid">
+          <div className="flex items-center justify-between gap-4">
+            <Label label={label1} />
+            <span className={cn("lyra-body-md text-lyra-fg-secondary", label1 === "Contact ID" && "font-mono")}>
+              {value1}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <Label label={label2} />
+            <span className="lyra-body-md text-lyra-fg-secondary">{value2}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ── TranscriptSessionSeparator ──
+   The "# CTX-... · <date>" pill row between sessions. `sticky top-0` (no
+   extra plumbing needed — this relies on plain CSS sticky-header stacking:
+   each separator is the first child of its own session block, in normal
+   document flow as a sibling of the next session block below it, so as the
+   transcript's own `overflow-y-auto` container scrolls, a separator sticks
+   to the top for as long as its session's messages are still scrolling by,
+   then gets pushed off-screen the instant the *next* session block's own
+   top — and therefore its own separator — reaches the scroll container's
+   top edge. That hand-off is the "then it replaces the other one" behavior
+   from the request; no scroll listener or IntersectionObserver needed for
+   it, just each separator being `sticky top-0` in source order.
+   `bg-lyra-bg-surface-base` keeps messages scrolling underneath from
+   showing through while it's pinned; `z-[1]` keeps it above them —
+   deliberately *not* `z-10`: `CustomerInformationInteriorPanel` (the
+   docked panel this transcript sits beside) renders at `z-[5]`
+   (interior-panel.tsx), and a sticky element's own `z-index` opens a new
+   stacking context compared against siblings up the tree, not just against
+   the messages scrolling directly beneath it — `z-10` was outranking that
+   panel and painting the separator/expanded Session Details card over top
+   of it once the panel had content past the fold (confirmed via
+   screenshot). `z-[1]` is enough to clear plain in-flow message content
+   (which has no z-index of its own) while staying under every panel in
+   this file that intentionally layers above the transcript.
+
+   The trailing gradient div is the same "soft fade instead of a hard edge"
+   technique `InteractionComposer` uses for its own top edge (see that
+   component's doc comment), mirrored: `position: sticky` already
+   establishes a containing block for an absolutely-positioned descendant
+   (same as `relative` would), so no extra wrapper is needed here. Placed
+   at `-bottom-8` (outside this div's own box, extending down into the
+   messages scrolling underneath) rather than as internal bottom padding,
+   so it overlays whatever message content is passing directly beneath the
+   separator instead of just adding empty space inside it. Gradient runs
+   solid (matching this bar's own background) at the top down to
+   transparent at the bottom — the reverse of the composer's direction,
+   since here the solid edge is at the *top* of the fade band, not the
+   bottom.
+
+   Session Details' open/close is animated via @radix-ui/react-accordion
+   directly (AccordionPrimitive.Root/Item/Content) rather than lyra-ui's
+   own Accordion component — that component always renders its own trigger
+   row (a full-width button with its own chevron) plus a border-b divider
+   after every item, neither of which fits here: the real trigger is the
+   "# CTX-..." pill button below, and this feature was explicitly built
+   with no dividers. Reusing the bare Radix primitives keeps the actual
+   animation mechanism identical to Accordion's though — same
+   data-[state=open]:animate-accordion-down data-[state=closed]:animate-
+   accordion-up classes, same --radix-accordion-content-height CSS
+   variable driving the height, same 200ms ease-in-out keyframes already
+   defined in this app's own tailwind.config.js (added there so Tailwind
+   picks up the classes Accordion itself needs) — just without Accordion's
+   own trigger/divider markup along for the ride. Root is fully controlled
+   off openSessionIds (InteractionTranscript's own state) via value; the
+   pill button below drives that state directly and never touches Radix's
+   own Trigger (not rendered here at all), so onValueChange is a no-op —
+   it only exists to satisfy React's controlled-prop-without-a-change-
+   handler warning. */
+function TranscriptSessionSeparator({
+  session,
+  open,
+  onToggle,
+}: {
+  session: TranscriptSession;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <AccordionPrimitive.Root
+      type="single"
+      collapsible
+      value={open ? session.id : ""}
+      onValueChange={() => {}}
+      className="sticky top-0 z-[1] bg-lyra-bg-surface-base"
+    >
+      <AccordionPrimitive.Item value={session.id}>
+        <div className="flex items-center gap-3 py-2">
+          <div className="h-px flex-1 bg-lyra-border-subtle" />
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={open}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-lyra-border-subtle px-3 py-1.5 lyra-body-sm text-lyra-fg-secondary transition-colors hover:bg-lyra-state-hover"
+          >
+            <span aria-hidden="true">#</span>
+            <span className="font-mono">{session.caseId}</span>
+            <span aria-hidden="true">·</span>
+            <span>{session.date}</span>
+            {open ? (
+              <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
+            )}
+          </button>
+          <div className="h-px flex-1 bg-lyra-border-subtle" />
+        </div>
+        <AccordionPrimitive.Content className="overflow-hidden data-[state=open]:animate-accordion-down data-[state=closed]:animate-accordion-up">
+          <div className="pb-4">
+            <TranscriptSessionDetails session={session} />
+          </div>
+        </AccordionPrimitive.Content>
+      </AccordionPrimitive.Item>
+      <div
+        className="pointer-events-none absolute inset-x-0 -bottom-8 h-8 bg-gradient-to-b from-lyra-bg-surface-base to-transparent"
+        aria-hidden="true"
+      />
+    </AccordionPrimitive.Root>
+  );
+}
+
+function InteractionTranscript() {
+  // Local, per-session tag state — removing/adding a tag on one message
+  // shouldn't touch any other message's tags (in this session or any
+  // other), so this is keyed by session id rather than one flat array.
+  const [sessionMessages, setSessionMessages] = useState<Record<string, TranscriptMessage[]>>(() =>
+    Object.fromEntries(TRANSCRIPT_SESSIONS.map((s) => [s.id, s.messages]))
+  );
+  // Which message's "Add tag" popover is open — at most one at a time,
+  // across every session (message ids are already unique per session, so
+  // a single id is enough with no session key needed alongside it).
+  const [tagPickerOpenId, setTagPickerOpenId] = useState<string | null>(null);
+  // Which sessions' "Session Details" panel is expanded — a Set, not a
+  // single id, since sessions toggle open/closed independently rather than
+  // as an exclusive accordion (matches the reference: clicking one
+  // separator doesn't collapse another that's already open).
+  const [openSessionIds, setOpenSessionIds] = useState<Set<string>>(new Set());
+
+  const toggleSession = (sessionId: string) => {
+    setOpenSessionIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
   };
 
-  const addTag = (messageId: string, option: Omit<TranscriptTag, "id">) => {
-    setMessages((prev) =>
-      prev.map((m) =>
+  const removeTag = (sessionId: string, messageId: string, tagId: string) => {
+    setSessionMessages((prev) => ({
+      ...prev,
+      [sessionId]: prev[sessionId].map((m) => (m.id === messageId ? { ...m, tags: m.tags?.filter((t) => t.id !== tagId) } : m)),
+    }));
+  };
+
+  const addTag = (sessionId: string, messageId: string, option: Omit<TranscriptTag, "id">) => {
+    setSessionMessages((prev) => ({
+      ...prev,
+      [sessionId]: prev[sessionId].map((m) =>
         m.id === messageId
           ? { ...m, tags: [...(m.tags ?? []), { ...option, id: `${messageId}-${option.label.toLowerCase()}` }] }
           : m
-      )
-    );
+      ),
+    }));
     // Deliberately doesn't close the popover — picking a tag is meant to be
     // a quick multi-select (add Complain, then Help, then close when done),
     // not a one-shot pick. Closing is explicit: the header's close button,
@@ -1827,159 +2268,29 @@ function InteractionTranscript() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="w-full max-w-[1200px] mx-auto px-6 py-4">
-        {/* Case id / date separator */}
-        <div className="flex items-center gap-3 py-2">
-          <div className="h-px flex-1 bg-lyra-border-subtle" />
-          <button
-            type="button"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-lyra-border-subtle px-3 py-1.5 lyra-body-sm text-lyra-fg-secondary transition-colors hover:bg-lyra-state-hover"
-          >
-            <span aria-hidden="true">#</span>
-            <span className="font-mono">{TRANSCRIPT_CASE_ID}</span>
-            <span aria-hidden="true">·</span>
-            <span>{TRANSCRIPT_CASE_DATE}</span>
-            <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
-          </button>
-          <div className="h-px flex-1 bg-lyra-border-subtle" />
-        </div>
-
-        {/* Messages */}
-        <div className="flex flex-col gap-5 py-4">
-          {messages.map((message) => {
-            const isCustomer = message.sender === "customer";
-            return (
-              <div key={message.id} className={cn("flex flex-col", isCustomer ? "items-start" : "items-end")}>
-                <div className={cn("flex max-w-[70%] items-start gap-2", isCustomer ? "flex-row" : "flex-row-reverse")}>
-                  <span
-                    className={cn(
-                      "flex h-7 w-7 shrink-0 items-center justify-center rounded-full lyra-body-sm-emphasis",
-                      isCustomer
-                        ? "bg-lyra-accent-green-soft text-lyra-accent-green-strong"
-                        : "bg-lyra-bg-primary text-lyra-fg-on-primary"
-                    )}
-                    aria-hidden="true"
-                  >
-                    {message.initials}
-                  </span>
-                  <div className="flex min-w-0 flex-col gap-1">
-                    <span className={cn("lyra-body-sm text-lyra-fg-secondary px-1", !isCustomer && "text-right")}>
-                      {message.name}
-                    </span>
-                    <div
-                      className={cn(
-                        "group flex items-end gap-1.5",
-                        isCustomer ? "flex-row" : "flex-row-reverse"
-                      )}
-                    >
-                      <div
-                        className={cn(
-                          "rounded-lyra-lg px-4 py-3 border border-transparent",
-                          isCustomer ? "rounded-tl-none bg-lyra-state-hover" : "rounded-tr-none"
-                        )}
-                        style={!isCustomer ? { backgroundColor: "var(--lyra-color-bg-conversation-user)" } : undefined}
-                      >
-                        <p className="lyra-body-md text-lyra-fg-default">{message.text}</p>
-                        <span className="mt-2 block lyra-body-sm text-lyra-fg-secondary">{message.timestamp}</span>
-                      </div>
-                      {/* Copy / Add tag — hidden until the bubble row is
-                          hovered, sitting just outside the bubble (right for
-                          customer bubbles, left for agent bubbles), bottom-
-                          aligned with it rather than overlapping it. */}
-                      <div
-                        className={cn(
-                          "mb-0.5 flex shrink-0 items-center gap-0.5 rounded-lyra-md border border-lyra-border-subtle bg-lyra-bg-surface-base p-0.5 opacity-0 shadow-sm transition-opacity group-hover:opacity-100",
-                          // The "Add tag" popover renders in a portal, so
-                          // moving the pointer into it isn't hovering this
-                          // row anymore — group-hover alone would fade the
-                          // toolbar out from under an open popover. Force it
-                          // visible whenever this message's picker is open.
-                          tagPickerOpenId === message.id && "opacity-100"
-                        )}
-                      >
-                        <ActionIconButton size="sm" title="Copy message" onClick={() => copyMessage(message.text)}>
-                          <Copy className="h-3.5 w-3.5" strokeWidth={1.5} />
-                        </ActionIconButton>
-                        <Popover
-                          open={tagPickerOpenId === message.id}
-                          onOpenChange={(open) => setTagPickerOpenId(open ? message.id : null)}
-                          placement="bottom"
-                          header={
-                            <PanelHeader
-                              title="Add tag"
-                              bordered={false}
-                              className="px-5 pb-0"
-                              onClose={() => setTagPickerOpenId(null)}
-                            />
-                          }
-                          content={
-                            <div className="flex flex-col gap-1 py-2">
-                              {QUICK_TAG_OPTIONS.filter(
-                                (opt) => !message.tags?.some((t) => t.label === opt.label)
-                              ).map((opt) => (
-                                <button
-                                  key={opt.label}
-                                  type="button"
-                                  className="group flex items-center rounded-lyra-sm px-1 py-1 text-left"
-                                  onClick={() => addTag(message.id, opt)}
-                                >
-                                  {/* Hover feedback lives on the tag pill's
-                                      own color (darkens slightly) instead of
-                                      a gray row background behind it — the
-                                      pill already carries the variant's
-                                      color, so that's what should visibly
-                                      react to hovering it. `brightness`
-                                      works regardless of which variant color
-                                      is in play, no per-variant hover class
-                                      needed. */}
-                                  <Tag
-                                    label={opt.label}
-                                    variant={opt.variant}
-                                    shape="pill"
-                                    className="transition-[filter] group-hover:brightness-95 dark:group-hover:brightness-125"
-                                  />
-                                </button>
-                              ))}
-                              {QUICK_TAG_OPTIONS.every((opt) =>
-                                message.tags?.some((t) => t.label === opt.label)
-                              ) && (
-                                <span className="px-1 py-1 lyra-body-sm text-lyra-fg-secondary">
-                                  All tags added
-                                </span>
-                              )}
-                            </div>
-                          }
-                        >
-                          <ActionIconButton size="sm" title="Add tag">
-                            <Tags className="h-3.5 w-3.5" strokeWidth={1.5} />
-                          </ActionIconButton>
-                        </Popover>
-                      </div>
-                    </div>
-                    {message.tags && message.tags.length > 0 && (
-                      <div
-                        className={cn(
-                          "mt-1 flex flex-wrap items-center gap-2",
-                          isCustomer ? "flex-row" : "flex-row-reverse"
-                        )}
-                      >
-                        {message.tags.map((tag) => (
-                          <Tag
-                            key={tag.id}
-                            label={tag.label}
-                            variant={tag.variant}
-                            shape="pill"
-                            onRemove={() => removeTag(message.id, tag.id)}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+      <div className="w-full max-w-[1200px] mx-auto px-6 py-4 lyra-transcript-wrap">
+        {TRANSCRIPT_SESSIONS.map((session) => (
+          <div key={session.id} className="flex flex-col">
+            <TranscriptSessionSeparator
+              session={session}
+              open={openSessionIds.has(session.id)}
+              onToggle={() => toggleSession(session.id)}
+            />
+            <div className="flex flex-col gap-5 py-4">
+              {sessionMessages[session.id].map((message) => (
+                <TranscriptMessageBubble
+                  key={message.id}
+                  message={message}
+                  tagPickerOpen={tagPickerOpenId === message.id}
+                  onTagPickerOpenChange={(open) => setTagPickerOpenId(open ? message.id : null)}
+                  onAddTag={(option) => addTag(session.id, message.id, option)}
+                  onRemoveTag={(tagId) => removeTag(session.id, message.id, tagId)}
+                  onCopy={() => copyMessage(message.text)}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -2489,7 +2800,26 @@ interface CustomerDirectoryPhoneState {
    demo, same static-`0` status as `TrackedChannel.messageCount`
    elsewhere) — plain text, not `Metric`/`DashboardCardMetric`, since those
    render a large headline figure + caption meant for a dashboard card,
-   not a compact inline stat under a phone field. */
+   not a compact inline stat under a phone field.
+
+   Each slot is its own single-item `Accordion` (title = the slot label,
+   e.g. "Home"/"Phone 2") — collapsible per request, `defaultValue={label}`
+   so every slot still starts open (same "collapsible but open by default"
+   convention as the Overview tab's own "Latest Interaction" accordion).
+   `PhoneInput` no longer gets its own `label` prop: the accordion's own
+   trigger already shows the slot name as its title immediately above the
+   field, so a second, identical label directly under it was pure
+   duplication (confirmed from a screenshot of the pre-accordion layout —
+   "Home" as a plain heading, then "Home" again as the phone field's own
+   label right below it).
+
+   No divider of its own on this row — `Accordion`'s own per-item
+   `border-b` (accordion.tsx, rendered after every item's content)
+   supplies the hairline between consecutive slots; `CustomerDirectory
+   TabContent` adds one `border-t` above the whole list of rows for the
+   divider separating it from the Email/Consent block, rather than every
+   row duplicating that same top border (which used to visually double up
+   with the row-before's own bottom divider). */
 function CustomerDirectoryPhoneRow({
   label,
   defaultState,
@@ -2503,24 +2833,55 @@ function CustomerDirectoryPhoneRow({
   const [block, setBlock] = useState(defaultState.block);
 
   return (
-    <div className="flex flex-col gap-3 px-4 py-4 border-t border-lyra-border-subtle">
-      <PhoneInput label={label} value={phone} onChange={setPhone} />
-      <div className="flex flex-col gap-1">
-        <span className="lyra-body-md-emphasis text-lyra-fg-default">Call Attempts Today: 0</span>
-        <span className="lyra-body-md-emphasis text-lyra-fg-default">Call Attempts Total: 0</span>
-      </div>
-      <div className="lyra-form-grid">
-        <div className="flex flex-col gap-2">
-          <Checkbox label="Consent Call" checked={consentCall} onCheckedChange={(c) => setConsentCall(c === true)} />
-          <Checkbox label="Consent SMS" checked={consentSms} onCheckedChange={(c) => setConsentSms(c === true)} />
-        </div>
-        <RadioGroup value={block} onValueChange={setBlock} className="gap-2">
-          {CUSTOMER_DIRECTORY_BLOCK_OPTIONS.map((option) => (
-            <RadioGroupItem key={option.value} value={option.value} label={option.label} />
-          ))}
-        </RadioGroup>
-      </div>
-    </div>
+    <Accordion
+      type="single"
+      defaultValue={label}
+      items={[
+        {
+          id: label,
+          title: label,
+          content: (
+            // Three columns — phone + its call-attempt stats, consent
+            // checkboxes, block radios — share one `.lyra-form-grid` row.
+            // `.lyra-form-grid` already handles any number of children
+            // evenly (`> *` gets `flex: 1 1 0%` by default — no
+            // per-consumer modifier needed, unlike `.lyra-card-split`'s
+            // `-even`, see that class's own doc comment in
+            // lyra-tokens.css for why the two families differ here), and
+            // reacts off the same `.lyra-form-grid-wrap` boundary this
+            // row's ancestor (`CustomerDirectoryTabContent`'s root div)
+            // already establishes — full width (e.g. `allowFullScreen`'d)
+            // reads as a real 3-up row per the reference screenshot, this
+            // panel's normal ~350–425px resizable width stacks to one
+            // column same as before this existed.
+            <div className="lyra-form-grid">
+              <div className="flex flex-col gap-3">
+                {/* `max-w-sm` (384px) — same convention as the Directory
+                    tab's `EmailInput` above (see its own comment): caps a
+                    single full-width-by-default field at a sane reading
+                    width via the standing `className` passthrough, rather
+                    than letting it stretch to fill this column's full
+                    (already only ~1/3-row) width. */}
+                <PhoneInput value={phone} onChange={setPhone} className="max-w-sm" />
+                <div className="flex flex-col gap-1">
+                  <span className="lyra-body-md-emphasis text-lyra-fg-default">Call Attempts Today: 0</span>
+                  <span className="lyra-body-md-emphasis text-lyra-fg-default">Call Attempts Total: 0</span>
+                </div>
+              </div>
+              <div className="flex flex-col gap-2">
+                <Checkbox label="Consent Call" checked={consentCall} onCheckedChange={(c) => setConsentCall(c === true)} />
+                <Checkbox label="Consent SMS" checked={consentSms} onCheckedChange={(c) => setConsentSms(c === true)} />
+              </div>
+              <RadioGroup value={block} onValueChange={setBlock} className="gap-2">
+                {CUSTOMER_DIRECTORY_BLOCK_OPTIONS.map((option) => (
+                  <RadioGroupItem key={option.value} value={option.value} label={option.label} />
+                ))}
+              </RadioGroup>
+            </div>
+          ),
+        },
+      ]}
+    />
   );
 }
 
@@ -2554,20 +2915,31 @@ function CustomerDirectoryTabContent({ email, phoneDisplay }: { email: string; p
   return (
     <div className="flex flex-col lyra-form-grid-wrap">
       <div className="flex flex-col gap-3 px-4 py-4">
-        <EmailInput label="Email" value={directoryEmail} onChange={setDirectoryEmail} />
+        {/* `max-w-sm` (384px) — same "cap a single full-width-by-default
+            field at a sane reading width" convention lyra-ui's own
+            Storybook demos use for a lone `Input`/`EmailInput` outside a
+            multi-column grid (`Input.stories.tsx`'s `max-w-[400px]`,
+            `TagsInput`/`Textarea` stories' `max-w-sm`) — `EmailInput`
+            itself has no dedicated width prop; `className` lands on its
+            outer wrapper div (email-input.tsx) same as `Input`, so this is
+            the standing way to constrain one rather than adding a new
+            component prop for it. */}
+        <EmailInput label="Email" value={directoryEmail} onChange={setDirectoryEmail} className="max-w-sm" />
         <Checkbox label="Consent" checked={emailConsent} onCheckedChange={(c) => setEmailConsent(c === true)} />
       </div>
-      {CUSTOMER_DIRECTORY_PHONE_LABELS.map((label, i) => (
-        <CustomerDirectoryPhoneRow
-          key={label}
-          label={label}
-          defaultState={
-            i === 0
-              ? { phone: phoneValueFromDisplay(phoneDisplay), consentCall: true, consentSms: true, block: "no-block" }
-              : { phone: { countryCode: "us", number: "" }, consentCall: false, consentSms: false, block: "no-block" }
-          }
-        />
-      ))}
+      <div className="border-t border-lyra-border-subtle">
+        {CUSTOMER_DIRECTORY_PHONE_LABELS.map((label, i) => (
+          <CustomerDirectoryPhoneRow
+            key={label}
+            label={label}
+            defaultState={
+              i === 0
+                ? { phone: phoneValueFromDisplay(phoneDisplay), consentCall: true, consentSms: true, block: "no-block" }
+                : { phone: { countryCode: "us", number: "" }, consentCall: false, consentSms: false, block: "no-block" }
+            }
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -2797,13 +3169,22 @@ function CustomerInformationInteriorPanel({
       // normal ~350–425px resizable range comfortably gives it — see
       // `allowFullScreen`'s own doc comment in interior-panel.tsx.
       allowFullScreen
-      // `overflowBreakpoint="compact"` per tabs.tsx's own doc comment —
-      // the fixed "wide" threshold (its default) is "basically always
-      // wrong" for an `InteriorPanel`'s narrow, resizable width range;
-      // content-aware "compact" collapses exactly when these 8 tabs stop
-      // fitting, at whatever width that turns out to be.
+      // Plain default `"wide"` mode (no `overflowBreakpoint` override) per
+      // explicit request: a fixed ≤400px collapse threshold, with the row
+      // scrolling via chevrons above that if these 8 tabs don't all fit —
+      // same behavior as every other `TabList` in the app. An earlier pass
+      // used `overflowBreakpoint="compact"` instead (content-aware,
+      // collapsing exactly when the tabs stop fitting regardless of any
+      // fixed pixel number) specifically because this panel's normal
+      // ~350–425px resizable width sits almost entirely at or under that
+      // 400px line — under `"wide"`, the row is collapsed to "active tab +
+      // N More" for nearly the panel's whole non-full-screen size range,
+      // only showing real tabs (or chevrons) once `allowFullScreen` pushes
+      // it past 400px. Switched back to the standard `"wide"` default
+      // anyway, to match how every other tab bar in the app behaves,
+      // trading that off deliberately.
       headerTabs={
-        <TabList className="px-4" overflowMenu overflowBreakpoint="compact">
+        <TabList className="px-4" overflowMenu>
           {CUSTOMER_PANEL_TABS.map((label, i) => (
             <Tab key={label} active={activeTab === i} onClick={() => setActiveTab(i)}>
               {label}
@@ -3240,7 +3621,7 @@ export function AgentNextGenPage({
         // The channel just started/restarted always takes over as current —
         // mirrors InteractionNavItem's own auto-select-newest rule, now
         // mirrored up here too since this state is what drives both the
-        // card (via currentChannelKey) and the new ChannelTab bar.
+        // card (via currentChannelKey) and the new ChannelToggle bar.
         return { ...interaction, channels, currentChannelId: newChannel.id };
       });
     });
@@ -3310,7 +3691,7 @@ export function AgentNextGenPage({
   const handleRedial = (entry: ContactHistoryEntry) => {
     const id = entry.customerId ?? `redial:${entry.id}`;
     // No stored phone number on ContactHistoryEntry — this channel's
-    // ChannelTab just shows icon + "Voice" with no address, same as any
+    // ChannelToggle just shows icon + "Voice" with no address, same as any
     // other channel with no addressLabel.
     const newChannel: TrackedChannel = {
       id: "voice",
@@ -3337,9 +3718,10 @@ export function AgentNextGenPage({
      the side panel/content area doesn't keep pointing at a card that no
      longer exists. `onDismissChannel` (only called when more than one
      channel was open) drops just that one channel, leaving the rest of the
-     card and its other channels open. The `ChannelTab` bar's own kebab wires
-     to the same two handlers (see the `activeInteraction` block below), so
-     dismissing from a tab behaves identically to dismissing from the card. */
+     card and its other channels open. The `ChannelToggle` bar's own kebab
+     wires to the same two handlers (see the `activeInteraction` block
+     below), so dismissing from a toggle behaves identically to dismissing
+     from the card. */
   const handleDismissInteraction = (id: string) => {
     // Dismissing the active assignment shouldn't strand the agent on an
     // empty dashboard when there's other open work waiting — hand "active"
@@ -3377,7 +3759,7 @@ export function AgentNextGenPage({
     );
   };
 
-  /** Fired by a card row's `onCurrentChannelChange` or a `ChannelTab`'s
+  /** Fired by a card row's `onCurrentChannelChange` or a `ChannelToggle`'s
    *  `onClick` — both point at this same setter so either one updates the
    *  other (see `ActiveInteraction.currentChannelId`'s own doc comment). */
   const handleChannelSelect = (interactionId: string, channelKey: string) => {
@@ -3927,7 +4309,7 @@ export function AgentNextGenPage({
                     onDismiss={() => handleDismissInteraction(interaction.id)}
                     onDismissChannel={(channel) => handleDismissChannel(interaction.id, channel)}
                     headerAction={getHeaderAction(interaction.id)}
-                    // Kept in sync with the ChannelTab bar under this
+                    // Kept in sync with the ChannelToggle bar in this
                     // interaction's record-header PageHeader — see
                     // ActiveInteraction.currentChannelId's own doc comment.
                     currentChannelKey={currentId}
@@ -3975,6 +4357,78 @@ export function AgentNextGenPage({
                     <PageHeader
                       title={activeInteraction.customerName ?? "Customer"}
                       subtitle={activeInteraction.recordId}
+                      // One toggle per open channel, to the right of the
+                      // customer name — back to `ChannelToggle`/
+                      // `ChannelToggleGroup` (`ToggleGroup`-style segmented
+                      // pill) per explicit request, reverting the brief
+                      // `ChannelTab`/`TabList` detour: `Tab`'s 48px-tall
+                      // row/bottom-border design never sat right embedded in
+                      // a single-line header row (screenshots showed it
+                      // rendering as a squished/disjointed fragment even
+                      // after widening its available space via
+                      // `titleSuffixGrow` and dropping its border) —
+                      // `ChannelToggle` was already purpose-built to sit
+                      // compactly inline here, which is why it's the one
+                      // going back in, not a third alternative. `titleSuffix`
+                      // stays at its default `shrink-0` (snug against the
+                      // name) — no `titleSuffixGrow` needed for a compact
+                      // pill cluster, only for `Tab`'s own row-based sizing.
+                      // Same per-channel behavior as always (kebab menu,
+                      // address + message-count/id tooltip, kept in sync
+                      // with the matching `InteractionNavItem` card via
+                      // currentChannelId/handleChannelSelect — see that
+                      // field's own doc comment). Shown even with just one
+                      // channel open — the toggle still surfaces that
+                      // channel's kebab actions (Unassign & Dismiss/Consult/
+                      // Transfer/etc.), not just a way to switch between
+                      // multiple. A plain vertical divider (matching
+                      // `panelToggle`'s own left-side divider elsewhere in
+                      // this component) separates the title from the toggle
+                      // cluster so the two don't visually run together.
+                      //
+                      // The trailing "+" after the toggle group is the exact
+                      // same Add Channel control every `InteractionNavItem`
+                      // card already has (`headerAction={getHeaderAction(
+                      // interaction.id)}` a few hundred lines up) — reusing
+                      // `getHeaderAction` here (not a second hand-built
+                      // button) means it's the identical dropdown: the same
+                      // `OutboundAddButton`, scoped to this same contact's
+                      // own supported channels, feeding the same
+                      // `launchRequest` state into the LeftNav's "New
+                      // Outbound" `CreateNew` instance a picked channel
+                      // already deep-links through — see
+                      // `useOutboundAddButton`'s own doc comment in
+                      // create-new.tsx. No new plumbing needed; this is
+                      // just a second place the hook's existing result gets
+                      // rendered.
+                      titleSuffix={
+                        activeInteraction.channels.length > 0 && (
+                          <div className="flex items-center gap-3">
+                            <div className="h-6 w-px bg-lyra-border-subtle" aria-hidden="true" />
+                            <ChannelToggleGroup>
+                              {activeInteraction.channels.map((c) => {
+                                const key = c.id ?? c.type;
+                                return (
+                                  <ChannelToggle
+                                    key={key}
+                                    type={c.type}
+                                    address={c.addressLabel}
+                                    messageCount={c.messageCount}
+                                    interactionId={c.interactionId}
+                                    active={(activeInteraction.currentChannelId ?? activeInteraction.channels[activeInteraction.channels.length - 1]?.id) === key}
+                                    onClick={() => handleChannelSelect(activeInteraction.id, key)}
+                                    onDismiss={() => {
+                                      if (activeInteraction.channels.length > 1) handleDismissChannel(activeInteraction.id, c);
+                                      else handleDismissInteraction(activeInteraction.id);
+                                    }}
+                                  />
+                                );
+                              })}
+                            </ChannelToggleGroup>
+                            {getHeaderAction(activeInteraction.id)}
+                          </div>
+                        )
+                      }
                       // Toggle for the Customer Information `InteriorPanel`
                       // below — lyra-ui's own documented pattern for an
                       // InteriorPanel's open/close trigger (see
@@ -4018,35 +4472,6 @@ export function AgentNextGenPage({
                         )
                       }
                     />
-                  )}
-                  {/* One tab per open channel — kept in sync with the same
-                      interaction's InteractionNavItem card via
-                      currentChannelId/handleChannelSelect (see that field's
-                      own doc comment). Shown even with just one channel open
-                      — the tab still surfaces that channel's kebab actions
-                      (Unassign & Dismiss/Consult/Transfer/etc.), not just a
-                      way to switch between multiple. */}
-                  {showPageHeader && activeInteraction.channels.length > 0 && (
-                    <TabList className="px-6 bg-lyra-bg-surface-base shrink-0" overflowMenu>
-                      {activeInteraction.channels.map((c) => {
-                        const key = c.id ?? c.type;
-                        return (
-                          <ChannelTab
-                            key={key}
-                            type={c.type}
-                            address={c.addressLabel}
-                            messageCount={c.messageCount}
-                            interactionId={c.interactionId}
-                            active={(activeInteraction.currentChannelId ?? activeInteraction.channels[activeInteraction.channels.length - 1]?.id) === key}
-                            onClick={() => handleChannelSelect(activeInteraction.id, key)}
-                            onDismiss={() => {
-                              if (activeInteraction.channels.length > 1) handleDismissChannel(activeInteraction.id, c);
-                              else handleDismissInteraction(activeInteraction.id);
-                            }}
-                          />
-                        );
-                      })}
-                    </TabList>
                   )}
                   {/* Body row: transcript+composer column + Customer
                       Information interior panel — same "main content +
