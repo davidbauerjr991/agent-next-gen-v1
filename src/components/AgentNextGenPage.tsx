@@ -115,6 +115,7 @@ import {
   CalendarDays,
   MonitorUp,
   GripVertical,
+  Move,
   Users,
   Building2,
   Ticket,
@@ -185,6 +186,15 @@ const OUTBOUND_CUSTOMERS: NonNullable<CreateNewOutboundConfig["groups"][number][
   subtitle: c.customerId,
   avatarClassName: c.avatarClassName,
   channels: c.channels,
+  // Matches `buildCustomerInfoFields`'s own synthesized "Phone #" exactly
+  // (same `hashSeed`/`synthesizePhone`, same seed input) — both are
+  // deterministic functions of the customer's own id, so "Select Phone"'s
+  // default here and the Customer Information panel's Directory tab always
+  // agree on the same "primary" number for a given customer, without one
+  // needing to read the other's state. `hashSeed`/`synthesizePhone` are
+  // `function` declarations further down this file, hoisted, so they're
+  // callable up here despite being defined later.
+  primaryPhone: { value: synthesizePhone(hashSeed(c.customerId || c.name)), label: synthesizePhone(hashSeed(c.customerId || c.name)) },
 }));
 
 const OUTBOUND_TEAMS: NonNullable<CreateNewOutboundConfig["groups"][number]["contacts"]> = [
@@ -357,6 +367,19 @@ interface ActiveInteraction {
    *  mirroring `InteractionNavItem`'s own auto-select-newest rule) and by
    *  `handleChannelSelect` (a row or tab click). */
   currentChannelId?: string;
+  /** Set once, at the moment this interaction's card is first created (the
+   *  `idx === -1` branch in `handleStartCall`/`handleQuickDial`/
+   *  `handleRedial`/`handleOpenAssignmentFromNotification`), never touched
+   *  again afterward — this app has no real backend to load prior message
+   *  history from, so a freshly-launched card genuinely has none yet,
+   *  unlike `initialInteraction` (a page seeded to start already mid-call,
+   *  which leaves this `undefined`/falsy on purpose so it keeps showing
+   *  real content). Drives `InteractionTranscript`'s empty "just the
+   *  session details, no messages yet" state for a brand-new SMS
+   *  interaction, per explicit request — re-selecting an interaction that
+   *  already existed (e.g. clicking Ethan Zhang's card) keeps this `false`/
+   *  unset and so keeps showing its full mock chat body instead. */
+  startedFresh?: boolean;
 }
 
 /** Fallback case id for interactions with no real customer/agent/team/skill
@@ -572,13 +595,69 @@ function AssignmentsSectionCaption({
 
 /* ── Sample notifications ── */
 
+/** Which channel each "new-case"/"escalation" notification's assignment
+ *  actually opens on when clicked (`handleOpenAssignmentFromNotification`)
+ *  — keyed by notification id. `AgentNotification` (lyra-ui) has no
+ *  channel field of its own, and this is fixed demo data anyway, so this
+ *  stays a small app-local lookup rather than a new field on the shared
+ *  type. Drives both a notification's own title text (`channelNoun`/
+ *  `newCaseNotificationTitle` below) and the channel that actually opens on
+ *  click, so the two can't drift apart the way a fixed "New Assignment"/
+ *  "Escalation" title next to a hardcoded "always opens Email" click
+ *  handler used to. Falls back to "email" for any id not listed here — the
+ *  closest reading among the channels this prototype models for "a case
+ *  landed in the queue." */
+const NOTIFICATION_CHANNEL: Record<string, ChannelType> = {
+  "1": "email",
+  "3": "email",
+  "4": "sms",
+};
+
+/** "Email"/"SMS"/"Chat"/"Call" — the bare channel-name word shared by both
+ *  `newCaseNotificationTitle` ("New {X}") and Escalation's own title
+ *  ("Escalation - {X}", see `INITIAL_NOTIFICATIONS` below), so the two
+ *  can't describe the same channel with two different words.
+ *  SMS/WhatsApp/Chat all read as "Chat" (default branch) — same
+ *  chat-shaped-channels grouping this app already uses elsewhere (e.g.
+ *  `contactHistoryChannelType`) — since nothing in this mock data
+ *  distinguishes them from a customer's own vantage point; Voice falls
+ *  back to "Call" defensively even though no current entry uses it. */
+function channelNoun(channel: ChannelType): string {
+  switch (channel) {
+    case "email":
+      return "Email";
+    case "sms":
+      return "SMS";
+    case "voice":
+      return "Call";
+    default:
+      return "Chat";
+  }
+}
+
+/** "New Email"/"New SMS"/"New Chat"/"New Call" — a "new-case" notification's
+ *  title, derived from whichever channel it's actually on
+ *  (`NOTIFICATION_CHANNEL` above) instead of a fixed "New Assignment"
+ *  string regardless of channel, per explicit request. */
+function newCaseNotificationTitle(channel: ChannelType): string {
+  return `New ${channelNoun(channel)}`;
+}
+
 const INITIAL_NOTIFICATIONS: AgentNotification[] = [
-  { id: "1", type: "new-case",    title: "New Assignment", subtitle: "Noah Patel",    timestamp: "13m ago", read: false },
-  { id: "2", type: "new-chat",    title: "New Chat",    subtitle: "Sarah Miller",  timestamp: "18m ago", read: false },
-  { id: "3", type: "escalation",  title: "Escalation",  subtitle: "Lauren Kim",    timestamp: "24m ago", read: false },
-  { id: "4", type: "new-case",    title: "New Assignment", subtitle: "Ethan Zhang",   timestamp: "37m ago", read: true  },
-  { id: "5", type: "new-chat",    title: "New Chat",    subtitle: "Olivia Reed",   timestamp: "51m ago", read: true  },
-  { id: "6", type: "missed-call", title: "Missed Call", subtitle: "David Brown",   timestamp: "1h ago",  read: true  },
+  { id: "1", type: "new-case",       title: newCaseNotificationTitle(NOTIFICATION_CHANNEL["1"]), subtitle: "Noah Patel",   timestamp: "13m ago", read: false },
+  // "new-agent-chat", not "new-chat" — a request from a colleague, not a
+  // customer, so it gets its own type (distinct icon/color,
+  // agent-notifications.tsx) and title, per explicit request that it read
+  // as a different category from "Olivia Reed"'s customer chat below, not
+  // just different label text on the same look.
+  { id: "2", type: "new-agent-chat", title: "New Agent Chat",                                            subtitle: "Sarah Miller",  timestamp: "18m ago", read: false },
+  // "Escalation - {channel}" — same per-channel suffix pattern as
+  // "new-case"'s own title, per explicit request, rather than a bare
+  // "Escalation" that doesn't say what actually landed.
+  { id: "3", type: "escalation",     title: `Escalation - ${channelNoun(NOTIFICATION_CHANNEL["3"])}`,     subtitle: "Lauren Kim",    timestamp: "24m ago", read: false },
+  { id: "4", type: "new-case",       title: newCaseNotificationTitle(NOTIFICATION_CHANNEL["4"]),          subtitle: "Ethan Zhang",   timestamp: "37m ago", read: true  },
+  { id: "5", type: "new-chat",       title: "New Chat",                                                   subtitle: "Olivia Reed",   timestamp: "51m ago", read: true  },
+  { id: "6", type: "missed-call",    title: "Missed Call",                                                 subtitle: "David Brown",   timestamp: "1h ago",  read: true  },
 ];
 
 /* ── Sample latest contacts ── */
@@ -1848,6 +1927,19 @@ function InteractionsTable({ interactions }: { interactions: ContactInteraction[
    rather than a real per-interaction transcript — this is a UI prototype of
    the transcript layout itself, not a case-data integration.
 
+   Only shown as-is for SMS/WhatsApp (a chat-shaped channel) — `channelType`
+   picks which content renders, matching the record header's own active
+   `ChannelToggle` pill: Voice and Email are placeholders ("Coming Soon
+   {Voice,Email} Content") rather than the same chat transcript, since a
+   voice call's or an email thread's own content genuinely doesn't look like
+   a chat log and hasn't been designed yet — showing the SMS mock underneath
+   either would misrepresent it as done. `customerName` swaps in for every
+   customer-sender message's hardcoded mock name/initials ("Liam Davis"/
+   "LD") in the SMS/WhatsApp branch, so the transcript at least reads as
+   this interaction's actual customer rather than always the same fixed
+   mock person; falls back to "Liam Davis" when unset (e.g. no active
+   interaction) so this still renders sensibly in isolation.
+
    Broken into sessions (each a `# <case id> · <date>` separator — see
    `TranscriptSessionSeparator` — followed by that session's own messages)
    rather than one flat message list, per explicit request: a single
@@ -2372,7 +2464,37 @@ function TranscriptSessionSeparator({
   );
 }
 
-function InteractionTranscript() {
+function InteractionTranscript({
+  channelType,
+  customerName,
+  recordId,
+  skillLabel,
+  isFreshLaunch,
+}: {
+  /** Which channel's content to show — see this component's own doc
+   *  comment above. Undefined (no active interaction/channel yet) renders
+   *  the same as SMS/WhatsApp. */
+  channelType?: ChannelType;
+  /** Real customer name to substitute for every customer-sender message's
+   *  hardcoded mock name in the SMS/WhatsApp transcript — see this
+   *  component's own doc comment above. */
+  customerName?: string;
+  /** This interaction's own record id — used as the synthetic "just
+   *  launched" session's Contact ID (see `isFreshLaunch` below). */
+  recordId: string;
+  /** The active channel's own skill preview (`TrackedChannel.preview`), if
+   *  any — shown as the synthetic "just launched" session's Skill field. */
+  skillLabel?: string;
+  /** True only for an interaction whose card was just created this session
+   *  (`ActiveInteraction.startedFresh` — see its own doc comment) — shows a
+   *  single empty "Session Details" separator (today's date, no messages)
+   *  for SMS instead of the fixed mock chat log, since a brand-new SMS
+   *  interaction genuinely has no history yet. Has no effect for any other
+   *  channel — Voice/Email already show their own "Coming Soon" placeholder
+   *  regardless, and WhatsApp still shows the mock log even when fresh
+   *  (only SMS was requested). */
+  isFreshLaunch: boolean;
+}) {
   // Local, per-session tag state — removing/adding a tag on one message
   // shouldn't touch any other message's tags (in this session or any
   // other), so this is keyed by session id rather than one flat array.
@@ -2496,6 +2618,68 @@ function InteractionTranscript() {
     setIsAtBottom(true);
   };
 
+  // Voice/Email have no designed transcript content yet — a plain
+  // placeholder rather than the SMS/WhatsApp mock chat log underneath,
+  // which would misrepresent a call/email thread as a chat conversation
+  // (see this component's own doc comment above). Returned before the
+  // chat-shaped markup below, not a conditional wrapped around it — every
+  // hook above still runs unconditionally either way, only the rendered
+  // output branches.
+  if (channelType === "voice" || channelType === "email") {
+    return (
+      <div className="flex flex-1 min-h-0 items-center justify-center">
+        <p className="lyra-body-md text-lyra-fg-secondary">
+          Coming Soon {channelType === "voice" ? "Voice" : "Email"} Content
+        </p>
+      </div>
+    );
+  }
+
+  // A freshly-launched SMS interaction (see `isFreshLaunch`'s own doc
+  // comment) — just the "Session Details" separator, synthesized from this
+  // interaction's own recordId/skill and today's real date/time, with no
+  // messages under it and no "Scroll To Latest" affordance (nothing to
+  // scroll to yet). Returned before the mock-log branch below, not folded
+  // into it — this is a single synthetic session, not a filtered view of
+  // `TRANSCRIPT_SESSIONS`, so it doesn't touch `sessionMessages` at all.
+  if (channelType === "sms" && isFreshLaunch) {
+    const now = new Date();
+    const freshSession: TranscriptSession = {
+      id: "session-fresh",
+      caseId: recordId,
+      date: now.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }),
+      startTime: now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }),
+      endTime: "—",
+      channel: "SMS",
+      skill: skillLabel ?? "—",
+      agent: `${CURRENT_AGENT_FIRST_NAME} ${CURRENT_AGENT_LAST_NAME}`,
+      status: "Open",
+      messages: [],
+    };
+    return (
+      <div className="relative flex-1 min-h-0">
+        <div className="h-full overflow-y-auto">
+          <div className="w-full max-w-[1200px] mx-auto px-6 py-4 lyra-transcript-wrap">
+            <TranscriptSessionSeparator
+              session={freshSession}
+              open={openSessionIds.has(freshSession.id)}
+              onToggle={() => toggleSession(freshSession.id)}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // SMS/WhatsApp (and no active channel yet) — the existing mock chat log,
+  // with every customer-sender message's hardcoded mock name/initials
+  // ("Liam Davis"/"LD") swapped for this interaction's real customer (see
+  // this component's own doc comment above). Only `TranscriptMessageBubble`
+  // sees the substituted copy — `sessionMessages` itself (and its tag
+  // mutations, keyed by the mock message ids) stays untouched.
+  const displayName = customerName?.trim() || "Liam Davis";
+  const displayInitials = initialsFor(displayName);
+
   return (
     <div className="relative flex-1 min-h-0">
       <div
@@ -2515,7 +2699,11 @@ function InteractionTranscript() {
                 {sessionMessages[session.id].map((message) => (
                   <TranscriptMessageBubble
                     key={message.id}
-                    message={message}
+                    message={
+                      message.sender === "customer"
+                        ? { ...message, name: displayName, initials: displayInitials }
+                        : message
+                    }
                     tagPickerOpen={tagPickerOpenId === message.id}
                     onTagPickerOpenChange={(open) => setTagPickerOpenId(open ? message.id : null)}
                     onAddTag={(option) => addTag(session.id, message.id, option)}
@@ -3580,11 +3768,10 @@ export function AgentNextGenPage({
    */
   initialInteraction?: ActiveInteraction;
   /**
-   * Overrides the record-header toggle button's tooltip for the Customer
-   * Information `InteriorPanel` (the button is icon-only, so this is its
-   * only visible label) — mirrors lyra-ui's `AgentNextGenTemplate` prop of
-   * the same name. Defaults to "Toggle Customer Information" here; pass a
-   * different string to override it.
+   * Overrides the record-header toggle button's visible label for the
+   * Customer Information `InteriorPanel` — mirrors lyra-ui's
+   * `AgentNextGenTemplate` prop of the same name. Defaults to "Customer
+   * Information" here; pass a different string to override it.
    */
   sidePanelToggleLabel?: string;
 }) {
@@ -3616,6 +3803,23 @@ export function AgentNextGenPage({
   // redialing a new assignment always sets this, so the screen switches
   // over automatically the moment one is added.
   const activeInteraction = interactions.find((i) => i.id === activeInteractionId) ?? null;
+  // Which channel type `InteractionTranscript` (below) should render content
+  // for — the same "current" channel the record header's own
+  // `ChannelToggleGroup` highlights (see its `active={... === key}` a few
+  // hundred lines down) and `InteractionNavItem`'s `currentChannelKey` both
+  // derive from, recomputed here rather than threading a shared value down
+  // from either of those since neither is an ancestor of
+  // `InteractionTranscript` in the tree. Falls back to the most recently
+  // added channel when nothing's been explicitly selected yet, same as
+  // everywhere else this "current channel" concept appears.
+  const activeChannel = activeInteraction
+    ? activeInteraction.channels.find(
+        (c) =>
+          (c.id ?? c.type) ===
+          (activeInteraction.currentChannelId ?? activeInteraction.channels[activeInteraction.channels.length - 1]?.id)
+      )
+    : undefined;
+  const activeChannelType = activeChannel?.type;
   // Shared clock powering every open channel's live "MM:SS since it
   // started" elapsed display — independent of `elapsedSeconds` below, which
   // is the agent's own status timer and resets on status change.
@@ -3833,7 +4037,13 @@ export function AgentNextGenPage({
      Desk dashboard's own right-docked `InteriorPanel` (below, "Case
      Details"/queue drill-down) already works. */
   const [customerPanelOpen,  setCustomerPanelOpen]  = useState(false);
-  const [customerPanelWidth, setCustomerPanelWidth] = useState(350);
+  // 425, not 350 — `CustomerInformationInteriorPanel`'s own `InteriorPanel`
+  // defaults `minWidth`/`maxWidth` to 350/425 (interior-panel.tsx) and would
+  // open fully expanded (`maxWidth`) on its own, but passing this as a
+  // controlled `width` prop below overrides that default entirely — so it
+  // needs to start at the same 425 `maxWidth` itself, per explicit request
+  // that the panel open at its max width initially, not its min.
+  const [customerPanelWidth, setCustomerPanelWidth] = useState(425);
 
   // The Customer Information panel belongs to the interaction it was opened
   // from — its only trigger is the toggle button on the interaction
@@ -3861,16 +4071,19 @@ export function AgentNextGenPage({
     if (isNavNarrow && navOpen) setNavOpen(false);
   }, [isNavNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Close and undock the shared app-header panel when viewport drops below
-  // 1280px — generalized from a pairwise "if AI is docked .../if
-  // Notifications is docked ..." (the old five-panel version only ever
-  // covered two of the five) to the one shared container this now is.
+  // Below 1280px, a DOCKED panel no longer forces itself to float+closed —
+  // it now combines with the main container into a single container with
+  // two tabs instead (see `isCombinedPanelMode` below, computed once
+  // `activePanelContent` exists further down). Floating panels are
+  // untouched by this breakpoint; they still float exactly as before.
+  // `narrowActiveRegion` is which of those two tabs is currently showing —
+  // reset back to "main" whenever the combined layout isn't actually in
+  // play (wide viewport, or nothing open), so it can't be left stuck on
+  // "panel" from a previous narrow session with nothing to show for it.
+  const [narrowActiveRegion, setNarrowActiveRegion] = useState<"main" | "panel">("main");
   useEffect(() => {
-    if (isNavNarrow && panelVariant === "docked") {
-      setPanelVariant("float");
-      setPanelOpen(false);
-    }
-  }, [isNavNarrow]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!isNavNarrow || !panelOpen) setNarrowActiveRegion("main");
+  }, [isNavNarrow, panelOpen]);
 
   // Plain open/closed toggle for the Customer Information `InteriorPanel`'s
   // trigger button — no pin/hover state to coordinate with anymore (see the
@@ -3924,6 +4137,10 @@ export function AgentNextGenPage({
     // string), so falling back to `selection.phone` itself is correct there,
     // not a placeholder.
     const addressLabel = OUTBOUND_CONFIG.phoneOptions.find((o) => o.value === selection.phone)?.label ?? selection.phone;
+    // Read before `setInteractions` below — whether this customer already
+    // has a card open decides whether Customer Information animates open
+    // (see the `setCustomerPanelOpen` call at the end of this handler).
+    const isNewInteraction = !interactions.some((i) => i.id === selection.contact.id);
     const newChannel: TrackedChannel = {
       id: `${selection.channel}:${selection.phone}`,
       type: selection.channel,
@@ -3953,6 +4170,7 @@ export function AgentNextGenPage({
           recordId: selection.contact.subtitle ?? generateCaseId(),
           channels: [newChannel],
           currentChannelId: newChannel.id,
+          startedFresh: true,
         }];
       }
       // Same contact already has an interaction open — restart the matching
@@ -3977,11 +4195,12 @@ export function AgentNextGenPage({
     });
     setActiveInteractionId(selection.contact.id);
     setNavOpen(true);
-    // A newly launched interaction defaults to its Customer Information
-    // panel open — previously it stayed closed until the agent clicked the
-    // toggle on every single interaction, even though that's the panel
-    // they almost always want up front.
-    setCustomerPanelOpen(true);
+    // Customer Information animates open only for a genuinely NEW
+    // interaction (per explicit request) — starting a second interaction
+    // with a customer who already has one open leaves the panel exactly as
+    // the agent last left it (open, or toggled closed) rather than
+    // re-forcing it open every time.
+    if (isNewInteraction) setCustomerPanelOpen(true);
   };
 
   const handleQuickDial = (phoneNumber: string) => {
@@ -3989,6 +4208,9 @@ export function AgentNextGenPage({
     // number itself so redialing the same number restarts its card rather
     // than stacking up duplicates.
     const id = `quickdial:${phoneNumber}`;
+    // Read before `setInteractions` below — see `handleStartCall`'s own
+    // `isNewInteraction` comment for why.
+    const isNewInteraction = !interactions.some((i) => i.id === id);
     // Voice has no message concept at all, so `messageCount` is left
     // undefined here (not `0`) — see `ChannelTabProps.messageCount`'s own
     // doc comment for why that's a deliberate omission, not an oversight.
@@ -4002,12 +4224,12 @@ export function AgentNextGenPage({
     };
     setInteractions((prev) => {
       const idx = prev.findIndex((i) => i.id === id);
-      if (idx === -1) return [...prev, { id, recordId: generateCaseId(), channels: [newChannel], currentChannelId: newChannel.id }];
+      if (idx === -1) return [...prev, { id, recordId: generateCaseId(), channels: [newChannel], currentChannelId: newChannel.id, startedFresh: true }];
       return prev.map((interaction, i) => (i === idx ? { ...interaction, channels: [newChannel], currentChannelId: newChannel.id } : interaction));
     });
     setActiveInteractionId(id);
     setNavOpen(true);
-    setCustomerPanelOpen(true);
+    if (isNewInteraction) setCustomerPanelOpen(true);
   };
 
   /* "Redial" from the home tab's Contact History card — same merge-by-id
@@ -4022,24 +4244,24 @@ export function AgentNextGenPage({
      Prefers `entry.customerId` (the real `CREATE_NEW_CUSTOMERS` id) over the
      synthetic `redial:` one whenever it's on hand — this was a real, shipped
      bug: `useOutboundAddButton`'s `getHeaderAction` looks up an interaction's
-     own id in `outboundConfig.groups` to build its "+" (Add Channel) button,
-     and `CreateNew`'s `launchRequest` effect does the same lookup again when
-     a channel is actually picked from that button's flyout. A synthetic
-     `redial:ch1`-style id never matches any real contact id, so the button
-     still rendered (its own fallback, per `getHeaderAction`'s doc comment,
-     covers exactly this) but clicking a channel in it silently did nothing —
-     `CreateNew`'s effect found no matching contact and just called
-     `onLaunchRequestHandled()` without ever opening the call-setup screen.
-     Using the real id makes a redialed card id-identical to one started
-     from the Outbound picker for the same customer, so "Add Channel" (and,
-     as a side effect, redialing the same customer who already has a card
-     open elsewhere) both resolve correctly. Only the 5 hand-authored
-     `CONTACT_HISTORY` rows (fictional names/case IDs, no backing
-     `CREATE_NEW_CUSTOMERS` record) still fall back to the synthetic id —
-     same pre-existing limitation `handleQuickDial` already has for numbers
-     with no contact record at all, not something new. */
+     own id in `outboundConfig.groups` to build its "+" (Add Channel) button.
+     A synthetic `redial:ch1`-style id never matches any real contact, so
+     `getHeaderAction` now returns `null` for it (no button at all) rather
+     than one that renders but silently does nothing once picked — see
+     `getHeaderAction`'s own doc comment in create-new.tsx. Using the real id
+     makes a redialed card id-identical to one started from the Outbound
+     picker for the same customer, so "Add Channel" (and, as a side effect,
+     redialing the same customer who already has a card open elsewhere) both
+     resolve correctly. Only the 5 hand-authored `CONTACT_HISTORY` rows
+     (fictional names/case IDs, no backing `CREATE_NEW_CUSTOMERS` record)
+     still fall back to the synthetic id, and so get no "+" button — same
+     pre-existing limitation `handleQuickDial` already has for numbers with
+     no contact record at all, not something new. */
   const handleRedial = (entry: ContactHistoryEntry) => {
     const id = entry.customerId ?? `redial:${entry.id}`;
+    // Read before `setInteractions` below — see `handleStartCall`'s own
+    // `isNewInteraction` comment for why.
+    const isNewInteraction = !interactions.some((i) => i.id === id);
     // No stored phone number on ContactHistoryEntry — this channel's
     // ChannelToggle just shows icon + "Voice" with no address, same as any
     // other channel with no addressLabel.
@@ -4051,12 +4273,12 @@ export function AgentNextGenPage({
     };
     setInteractions((prev) => {
       const idx = prev.findIndex((i) => i.id === id);
-      if (idx === -1) return [...prev, { id, customerName: entry.name, recordId: entry.caseId, channels: [newChannel], currentChannelId: newChannel.id }];
+      if (idx === -1) return [...prev, { id, customerName: entry.name, recordId: entry.caseId, channels: [newChannel], currentChannelId: newChannel.id, startedFresh: true }];
       return prev.map((interaction, i) => (i === idx ? { ...interaction, channels: [newChannel], currentChannelId: newChannel.id } : interaction));
     });
     setActiveInteractionId(id);
     setNavOpen(true);
-    setCustomerPanelOpen(true);
+    if (isNewInteraction) setCustomerPanelOpen(true);
   };
 
   /* "Unassign & Dismiss" — `InteractionNavItem` itself decides which of
@@ -4129,31 +4351,51 @@ export function AgentNextGenPage({
      use, which are disabled so starting another interaction on one of them
      wouldn't just duplicate the one already running (a different outbound
      line for the same channel — or a second, still-unused one, even when
-     one SMS number is already open — stays selectable).
-     `CreateNewOutboundContact.openChannelAddresses` is exactly the
-     mechanism `CreateNew` exposes for this (see its own doc comment), so
-     rather than adding new disabling logic to that shared component, this
-     derives a per-render copy of OUTBOUND_CONFIG that tags each contact
-     with every address in use for whichever channels they already have
-     open in `interactions` (read off each `TrackedChannel.value`, set at
+     one SMS number is already open — stays selectable). Voice is the one
+     exception to "disable by address, not by channel" — see
+     `openChannelTypes`/`isChannelBlockedForContact`'s own doc comments
+     (create-new.tsx) for why a call has no per-address concept to key off
+     of at all.
+     `CreateNewOutboundContact.openChannelAddresses`/`openChannelTypes` are
+     exactly the mechanisms `CreateNew` exposes for this (see each one's own
+     doc comment), so rather than adding new disabling logic to that shared
+     component, this derives a per-render copy of OUTBOUND_CONFIG that tags
+     each contact with every address in use (`openChannelAddresses`) AND
+     every channel *type* currently open regardless of address
+     (`openChannelTypes`) for whichever channels they already have open in
+     `interactions` (read off each `TrackedChannel.type`/`.value`, set at
      start-call time — a contact can have more than one channel of the same
-     type open at once, e.g. two SMS threads on different numbers, so this
-     is a list per channel type, not a single address), across every group
-     (Agents/Teams/Skills/Customers — Favorites is derived from these same
-     records, so it inherits the tagging automatically). Recomputed
-     whenever `interactions` changes so an address re-enables the moment its
-     interaction is dismissed. */
+     type open at once, e.g. two SMS threads on different numbers, so
+     addresses are a list per channel type, not a single value), across
+     every group (Agents/Teams/Skills/Customers — Favorites is derived from
+     these same records, so it inherits the tagging automatically).
+     Recomputed whenever `interactions` changes so an address/channel
+     re-enables the moment its interaction is dismissed. */
   const outboundConfig = useMemo<CreateNewOutboundConfig>(() => {
-    const openAddressesByContactId = new Map<string, Partial<Record<ChannelType, string[]>>>(
-      interactions.map((interaction) => {
-        const byType: Partial<Record<ChannelType, string[]>> = {};
-        for (const c of interaction.channels) {
-          if (!c.value) continue;
-          (byType[c.type] ??= []).push(c.value);
-        }
-        return [interaction.id, byType];
-      })
-    );
+    const openAddressesByContactId = new Map<string, Partial<Record<ChannelType, string[]>>>();
+    // Separate from `openAddressesByContactId` above — that one only ever
+    // records a channel once it has a real `.value` (an actual number/
+    // address), so a channel with none on record (e.g. `handleRedial`'s
+    // voice channel, which has no stored phone number at all) would never
+    // show up there despite genuinely being open. `openChannelTypes` tracks
+    // presence alone, regardless of address, which is what
+    // `isChannelBlockedForContact` (create-new.tsx) needs to disable
+    // "Select Channel"'s Voice option — see that function's own doc
+    // comment for the bug this fixes (a redialed voice interaction's own
+    // "Add Channel" flow let Voice be picked again, since the
+    // address-keyed map had nothing to disable it with).
+    const openTypesByContactId = new Map<string, Set<ChannelType>>();
+    for (const interaction of interactions) {
+      const byType: Partial<Record<ChannelType, string[]>> = {};
+      const types = new Set<ChannelType>();
+      for (const c of interaction.channels) {
+        types.add(c.type);
+        if (!c.value) continue;
+        (byType[c.type] ??= []).push(c.value);
+      }
+      openAddressesByContactId.set(interaction.id, byType);
+      openTypesByContactId.set(interaction.id, types);
+    }
     return {
       ...OUTBOUND_CONFIG,
       groups: OUTBOUND_CONFIG.groups.map((group) => {
@@ -4162,8 +4404,13 @@ export function AgentNextGenPage({
           ...group,
           contacts: group.contacts.map((contact) => {
             const openChannelAddresses = openAddressesByContactId.get(contact.id);
-            if (!openChannelAddresses || Object.keys(openChannelAddresses).length === 0) return contact;
-            return { ...contact, openChannelAddresses };
+            const openChannelTypes = openTypesByContactId.get(contact.id);
+            if (!openChannelTypes || openChannelTypes.size === 0) return contact;
+            return {
+              ...contact,
+              ...(openChannelAddresses && Object.keys(openChannelAddresses).length > 0 ? { openChannelAddresses } : {}),
+              openChannelTypes: [...openChannelTypes],
+            };
           }),
         };
       }),
@@ -4171,16 +4418,33 @@ export function AgentNextGenPage({
   }, [interactions]);
 
   // Every "Agent Next Gen" consumer (this app, AgentNextGenTemplate.
-  // stories.tsx, LeftNav.stories.tsx's "Agent Next Gen Left Nav" story)
-  // wants the exact same "+" behavior on each InteractionNavItem card —
-  // look up that interaction's underlying outbound contact, scope the
-  // flyout to whatever channels it actually supports (falling back to the
-  // full unfiltered list for quick-dialed/redialed numbers with no matching
-  // contact record), and deep-link a picked channel into CreateNew's
-  // `launchRequest`. That's `useOutboundAddButton` (lyra-ui) — a single
-  // shared implementation instead of three hand-copied ones that could
-  // (and did) quietly drift out of sync.
-  const { launchRequest: outboundLaunchRequest, onLaunchRequestHandled, getHeaderAction } = useOutboundAddButton(outboundConfig);
+  // stories.tsx, LeftNav.stories.tsx's "Agent Next Gen Left Nav" story,
+  // InteractionNavItem.stories.tsx) wants the exact same "+" behavior on
+  // each InteractionNavItem card — look up that interaction's underlying
+  // outbound contact and scope the flyout to whatever channels it actually
+  // supports. That's `useOutboundAddButton` (lyra-ui) — a single shared
+  // implementation instead of hand-copied ones that could (and did) quietly
+  // drift out of sync.
+  //
+  // No more `launchRequest`/`onLaunchRequestHandled` here — `OutboundAddButton`
+  // is fully self-contained now (per explicit request: adding a channel from
+  // an already-open interaction's own "+" was popping the detail form up
+  // next to the LeftNav's separate "New Outbound" trigger instead of right
+  // where the "+" was clicked). The picked channel's whole detail form
+  // (Select Channel/Select Address/Outbound Skill/Start Interaction) now
+  // renders in that same small popover, and `onStartCall` fires directly —
+  // no hand-off to the LeftNav's own `CreateNew` instance for this flow.
+  //
+  // `onStartCall: handleStartCall` override is required here, same as the
+  // LeftNav's own `<CreateNew outbound={{...outboundConfig, onStartCall:
+  // handleStartCall, ...}}>` wiring below — `outboundConfig` itself still
+  // carries `OUTBOUND_CONFIG`'s placeholder `onStartCall` (just a
+  // console.log, see its own definition), not the real handler. Passing
+  // the bare `outboundConfig` here was a real, shipped bug: pressing
+  // "Start Interaction" from this button silently logged instead of
+  // actually opening a card, since `useOutboundAddButton`'s `getHeaderAction`
+  // calls `outboundConfig.onStartCall?.(selection)` directly (create-new.tsx).
+  const { getHeaderAction } = useOutboundAddButton({ ...outboundConfig, onStartCall: handleStartCall });
 
   /* Welcome modal — shown once on page load; "Go Available" flips the agent
      to Available, "Start Unavailable" keeps them Unavailable (the default
@@ -4268,22 +4532,37 @@ export function AgentNextGenPage({
   };
 
   // ── Content for each button ──
-  /* "New Assignment" notification click — opens (or re-focuses) a real
-     assignment card in the LeftNav, same merge-by-id + "expand the nav,
-     open the Customer Information panel" pattern `handleQuickDial`/
-     `handleRedial` already use, just keyed off the notification itself
-     (namespaced "notif:" so it can't collide with an Outbound-picker
-     contact id, a quick-dialed number, or a Contact History redial) rather
-     than a phone number or picked contact. No stored channel type on
-     `AgentNotification` to key off of — defaults to "email", the closest
-     read of "a new case came in" among the channel types this prototype
-     actually models (voice/chat implies an already-live conversation; a
-     case is closer to something that arrived asynchronously). */
+  /* "New Assignment"/"Escalation" notification click — opens (or re-focuses)
+     a real assignment card in the LeftNav, same merge-by-id + "expand the
+     nav, open the Customer Information panel" pattern `handleQuickDial`/
+     `handleRedial` already use. Channel comes from `NOTIFICATION_CHANNEL`
+     (falling back to "email" for any id not listed there) — see that map's
+     own doc comment for why this stays a small app-local lookup rather
+     than a field on `AgentNotification` itself.
+
+     Keyed by a REAL `CREATE_NEW_CUSTOMERS` id — deterministically picked
+     from the notification's own id (`Number(notification.id) % ...length`,
+     not random, so re-clicking the same notification always resolves to the
+     same card) — rather than a synthetic `notif:${id}` one. This is the
+     exact same case `handleRedial`'s own doc comment above describes:
+     `useOutboundAddButton`'s `getHeaderAction` looks up an interaction's id
+     in `outboundConfig.groups` to resolve its "+" Add Channel button — a
+     synthetic id never matches, so `getHeaderAction` returns no button at
+     all for it. Using a real customer id here means notification-opened
+     assignments get a working Add Channel button just like any other
+     assignment, while still displaying the notification's own name
+     (`customerName` below), since the merge branch further down never
+     overwrites an existing card's `customerName`. */
   const handleOpenAssignmentFromNotification = (notification: AgentNotification) => {
-    const id = `notif:${notification.id}`;
+    const customerIdx = Number(notification.id) % CREATE_NEW_CUSTOMERS.length;
+    const id = CREATE_NEW_CUSTOMERS[Number.isFinite(customerIdx) ? customerIdx : 0].id;
+    // Read before `setInteractions` below — see `handleStartCall`'s own
+    // `isNewInteraction` comment for why.
+    const isNewInteraction = !interactions.some((i) => i.id === id);
+    const channel = NOTIFICATION_CHANNEL[notification.id] ?? "email";
     const newChannel: TrackedChannel = {
-      id: "email",
-      type: "email",
+      id: channel,
+      type: channel,
       startTick: clockTick,
       interactionId: generateInteractionId(),
     };
@@ -4296,6 +4575,7 @@ export function AgentNextGenPage({
           recordId: generateCaseId(),
           channels: [newChannel],
           currentChannelId: newChannel.id,
+          startedFresh: true,
         }];
       }
       return prev.map((interaction, i) =>
@@ -4304,7 +4584,7 @@ export function AgentNextGenPage({
     });
     setActiveInteractionId(id);
     setNavOpen(true);
-    setCustomerPanelOpen(true);
+    if (isNewInteraction) setCustomerPanelOpen(true);
     setNotifications((prev) => prev.map((n) => (n.id === notification.id ? { ...n, read: true } : n)));
   };
 
@@ -4318,12 +4598,12 @@ export function AgentNextGenPage({
     onMarkAllRead: () => setNotifications((prev) => prev.map((n) => ({ ...n, read: true }))),
     onClearAll: () => setNotifications([]),
     onDismiss: (id: string) => setNotifications((prev) => prev.filter((n) => n.id !== id)),
-    // Only "New Assignment" (`type: "new-case"`) notifications open a real
-    // assignment — the rest (New Chat/Escalation/Missed Call) keep the
-    // original "just mark it read" behavior, since they don't represent an
-    // assignment this app actually models opening.
+    // "New Assignment" (`type: "new-case"`) and "Escalation" notifications
+    // both open a real assignment — the rest (New Chat/Missed Call) keep
+    // the original "just mark it read" behavior, since they don't represent
+    // an assignment this app actually models opening.
     onNotificationClick: (n: AgentNotification) =>
-      n.type === "new-case"
+      n.type === "new-case" || n.type === "escalation"
         ? handleOpenAssignmentFromNotification(n)
         : setNotifications((prev) => prev.map((i) => i.id === n.id ? { ...i, read: true } : i)),
   });
@@ -4393,6 +4673,21 @@ export function AgentNextGenPage({
   };
   const activePanelContent = activePanelKey ? contentByPanelKey[activePanelKey] : null;
 
+  // Below 1280px, a DOCKED (not floating) open panel combines with the main
+  // container into a single container with two tabs — one for whatever the
+  // main view currently is (Settings/an active interaction/Home), one for
+  // the panel — instead of sitting docked beside it. `panelOpen` is
+  // required (not just `activePanelContent`, which stays non-null after
+  // closing — `handlePanelButtonClick` never clears `activePanelKey`, only
+  // `panelOpen`) so this doesn't stay "true" for a panel that's actually
+  // closed.
+  const isCombinedPanelMode = isNavNarrow && panelOpen && panelVariant === "docked" && !!activePanelContent;
+  const mainRegionTabLabel = showSettings
+    ? "Settings"
+    : activeInteraction
+      ? `${activeInteraction.customerName ?? "Customer"} (${activeInteraction.recordId})`
+      : "Home";
+
   // Clicking a button: re-clicking the CURRENTLY showing one closes the
   // shared container outright. Otherwise, if it's closed, open it docked
   // (see `panelVariant`'s own doc comment above); if it's already open
@@ -4409,6 +4704,10 @@ export function AgentNextGenPage({
       setPanelOpen(true);
     }
     setActivePanelKey(key);
+    // Below 1280px, opening a panel switches straight to its tab — otherwise
+    // clicking a header icon while narrow would silently open the panel
+    // behind whatever the main tab currently shows, with no visible change.
+    if (isNavNarrow) setNarrowActiveRegion("panel");
   };
 
   // "Selected" treatment for whichever AppHeader icon button currently owns
@@ -4926,8 +5225,6 @@ export function AgentNextGenPage({
                 ...outboundConfig,
                 onStartCall: handleStartCall,
                 onQuickDial: handleQuickDial,
-                launchRequest: outboundLaunchRequest,
-                onLaunchRequestHandled,
               }}
               expanded={navOpen}
             />
@@ -4996,14 +5293,43 @@ export function AgentNextGenPage({
             ref used to position float panels. */}
         <div ref={containerRef} className="relative flex flex-1 min-w-0 overflow-hidden pr-3 pb-3">
 
-          {/* Main Container — flex row; PageHeader + content is the sole
-              flex child now that the Customer Information panel moved to
-              an `InteriorPanel` docked right *inside* the interaction body
-              below, instead of a `SidePanel` docked left out here. */}
-          <Container className="flex flex-1 overflow-hidden relative">
+          {/* Main Container — flex column now (was flex row; harmless
+              change for the single flex-1 child this had before — a lone
+              flex-1 child stretches to fill both axes the same way in
+              either direction) so `isCombinedPanelMode`'s tab row can stack
+              above the content instead of sitting beside it. PageHeader +
+              content is still the sole child the rest of the time — the
+              Customer Information panel moved to an `InteriorPanel` docked
+              right *inside* the interaction body below, instead of a
+              `SidePanel` docked left out here. */}
+          <Container className="flex flex-col flex-1 overflow-hidden relative">
+
+            {/* Below 1280px with a docked panel open: a second tab
+                (`activePanelContent.title`, e.g. "Notifications") sits
+                alongside this main region's own tab, and this whole
+                container becomes the shared surface both regions toggle
+                inside of instead of the panel docking beside it. Same
+                `TabList`/`Tab` composition as the Dashboard's own tab row
+                below (and everywhere else in this file) — not a new
+                component. */}
+            {isCombinedPanelMode && (
+              <TabList fullWidth className="bg-lyra-bg-surface-base shrink-0">
+                <Tab active={narrowActiveRegion === "main"} onClick={() => setNarrowActiveRegion("main")}>
+                  {mainRegionTabLabel}
+                </Tab>
+                <Tab active={narrowActiveRegion === "panel"} onClick={() => setNarrowActiveRegion("panel")}>
+                  {activePanelContent?.title}
+                </Tab>
+              </TabList>
+            )}
 
             {/* Content column: PageHeader + page body */}
-            <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
+            <div
+              className={cn(
+                "flex flex-1 flex-col min-w-0 overflow-hidden",
+                isCombinedPanelMode && narrowActiveRegion !== "main" && "hidden"
+              )}
+            >
               {showSettings ? (
                 // ── Settings — a blank page for now (real settings content
                 // isn't built yet), same "just the header, blank body below"
@@ -5062,20 +5388,33 @@ export function AgentNextGenPage({
                       // card already has (`headerAction={getHeaderAction(
                       // interaction.id)}` a few hundred lines up) — reusing
                       // `getHeaderAction` here (not a second hand-built
-                      // button) means it's the identical dropdown: the same
-                      // `OutboundAddButton`, scoped to this same contact's
-                      // own supported channels, feeding the same
-                      // `launchRequest` state into the LeftNav's "New
-                      // Outbound" `CreateNew` instance a picked channel
-                      // already deep-links through — see
-                      // `useOutboundAddButton`'s own doc comment in
-                      // create-new.tsx. No new plumbing needed; this is
-                      // just a second place the hook's existing result gets
-                      // rendered.
+                      // button) means it's the identical `OutboundAddButton`,
+                      // scoped to this same contact's own supported
+                      // channels. Picking a channel here shows its whole
+                      // detail form (Select Channel/Address/Skill/Start
+                      // Interaction) right in this same popover now, not the
+                      // LeftNav's separate "New Outbound" `CreateNew`
+                      // instance — see `OutboundAddButton`'s own doc comment
+                      // in create-new.tsx for why that hand-off was removed
+                      // (it was popping the form up next to the LeftNav
+                      // instead of by the "+" the agent actually clicked, per
+                      // explicit request). No new plumbing needed here; this
+                      // is just a second place the hook's existing result
+                      // gets rendered.
                       titleSuffix={
                         activeInteraction.channels.length > 0 && (
                           <div className="flex items-center gap-3">
-                            <div className="h-6 w-px bg-lyra-border-subtle" aria-hidden="true" />
+                            {/* Hidden below 768px of the header's own width
+                                (`lyra-page-header-suffix-divider`, see
+                                lyra-tokens.css's "Page header title-suffix
+                                wrap" family) — this divider only reads as a
+                                separator between the title and the toggle
+                                group while both share one line; once the
+                                group wraps to its own row below, a lone
+                                vertical bar floating there with nothing to
+                                actually divide just looks like a rendering
+                                glitch. */}
+                            <div className="lyra-page-header-suffix-divider h-6 w-px bg-lyra-border-subtle" aria-hidden="true" />
                             <ChannelToggleGroup
                               // Add Channel "+" lives inside this same
                               // bordered/rounded shell now (per explicit
@@ -5138,19 +5477,17 @@ export function AgentNextGenPage({
                       // CONTRIBUTING.md documents for `Menu`'s current-item
                       // row (bg-lyra-bg-active-subtle, escalating on hover/
                       // press) rather than inventing a one-off toggled color.
-                      // Icon-only now (`size="icon-md"`, one of `Button`'s
-                      // `ICON_SIZES` — see button.tsx) — that alone flips
-                      // `isIconVariant` on even though `variant="outline"`,
-                      // which is what makes `Button` auto-wrap it in a
-                      // `Tooltip` off the `title` prop and swap in
-                      // `aria-label` instead of visible text, no separate
-                      // `Tooltip` needed here.
+                      // Text button now (icon + visible label), per explicit
+                      // request — no longer one of `Button`'s `ICON_SIZES`,
+                      // so `isIconVariant` is off and `title` would just sit
+                      // as a redundant native-tooltip attribute alongside the
+                      // now-visible label; dropped in favor of the label
+                      // itself doing that job.
                       actions={
                         showPanelToggle && (
                           <Button
                             variant="outline"
-                            size="icon-md"
-                            title={sidePanelToggleLabel ?? "Toggle Customer Information"}
+                            size="default"
                             aria-pressed={customerPanelOpen}
                             onClick={handleCustomerPanelToggle}
                             className={
@@ -5160,6 +5497,7 @@ export function AgentNextGenPage({
                             }
                           >
                             <User className="h-4 w-4" strokeWidth={1.5} aria-hidden="true" />
+                            {sidePanelToggleLabel ?? "Customer Information"}
                           </Button>
                         )
                       }
@@ -5171,7 +5509,13 @@ export function AgentNextGenPage({
                       dashboard's own right-docked InteriorPanel below. */}
                   <div className="relative flex flex-1 overflow-hidden">
                     <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
-                      <InteractionTranscript />
+                      <InteractionTranscript
+                        channelType={activeChannelType}
+                        customerName={activeInteraction.customerName}
+                        recordId={activeInteraction.recordId}
+                        skillLabel={activeChannel?.preview}
+                        isFreshLaunch={!!activeInteraction.startedFresh}
+                      />
                       <InteractionComposer />
                     </div>
                     {showPanelToggle && (
@@ -5400,6 +5744,61 @@ export function AgentNextGenPage({
               )}
             </div>
 
+            {/* The docked panel's own content, inline as this container's
+                second tab — `Draggable`'s own grip/resize plumbing is
+                skipped (nothing to drag-position or resize-into once this
+                pane spans the container's full width), but the real
+                `ContainerHeader` (title/icon/actions/close) is NOT — same
+                shape `sharedPanel`'s `renderHeaderControls` below renders,
+                just with the dock button wired directly to
+                `handlePanelVariantChange` instead of `Draggable`'s own
+                internal toggle (there's no mounted `Draggable` instance
+                here to own that state while this pane is showing). Always
+                shows the "docked" dock icon/label (`Move`/"Undock") since
+                this pane only ever renders while `panelVariant === "docked"`
+                — clicking it hands off to the exact same float rendering
+                below (untouched), which is what makes the tabs disappear;
+                re-docking from there flips `panelVariant` back to "docked"
+                and `isCombinedPanelMode` brings the tabs right back. */}
+            {isCombinedPanelMode && activePanelContent && (
+              <div
+                className={cn(
+                  "flex flex-1 flex-col min-w-0 overflow-hidden",
+                  narrowActiveRegion !== "panel" && "hidden"
+                )}
+              >
+                <ContainerHeader
+                  title={activePanelContent.title}
+                  titleBadge={activePanelContent.titleBadge}
+                  titleClassName={activePanelContent.titleClassName}
+                  icon={activePanelContent.dockedIcon}
+                  bordered={!activePanelContent.headerContent}
+                  actions={
+                    <>
+                      {activePanelContent.headerActions}
+                      <Tooltip content="Undock" placement="bottom" asLabel>
+                        <ActionIconButton
+                          aria-label="Undock"
+                          size="sm"
+                          onClick={() => handlePanelVariantChange("float")}
+                          className="text-lyra-fg-secondary hover:text-lyra-fg-secondary"
+                        >
+                          <Move className="h-3.5 w-3.5" strokeWidth={1.5} />
+                        </ActionIconButton>
+                      </Tooltip>
+                    </>
+                  }
+                  onClose={() => setPanelOpen(false)}
+                />
+                {activePanelContent.headerContent && (
+                  <div className="shrink-0 px-4 pb-3 border-b border-lyra-border-subtle">
+                    {activePanelContent.headerContent}
+                  </div>
+                )}
+                {activePanelContent.body}
+              </div>
+            )}
+
           </Container>
 
           {/* Shared single-container panel — float (CSS transitions, not
@@ -5428,8 +5827,11 @@ export function AgentNextGenPage({
         {/* Shared single-container panel — docked (sibling of containerRef
             so flex layout keeps it in-bounds). Was five near-identical
             blocks (one per panel); with only one physical container now,
-            there's only one. */}
-        {panelVariant === "docked" && (
+            there's only one. Skipped in `isCombinedPanelMode` — below
+            1280px the panel's content renders inline as the main
+            container's second tab instead (see above), not as this
+            separate docked-width column beside it. */}
+        {panelVariant === "docked" && !isCombinedPanelMode && (
           <div className="flex h-full pb-3" style={{
             width: panelState === "open" ? panelWidth : 0,
             height: "100%",
