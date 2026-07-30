@@ -195,6 +195,18 @@ const OUTBOUND_CUSTOMERS: NonNullable<CreateNewOutboundConfig["groups"][number][
   // `function` declarations further down this file, hoisted, so they're
   // callable up here despite being defined later.
   primaryPhone: { value: synthesizePhone(hashSeed(c.customerId || c.name)), label: synthesizePhone(hashSeed(c.customerId || c.name)) },
+  // Matches `buildCustomerInfoFields`'s own synthesized "Email" fallback
+  // exactly (same `splitCustomerName` + `${first}.${last}@example.com`
+  // formula) — so Favorites' "Enter phone, email or search term" search
+  // (`contactMatchesSearch`, create-new.tsx) can actually match a
+  // customer's email, and it agrees with what the Customer Information
+  // panel already shows for that same customer. `splitCustomerName` is a
+  // `function` declaration further down this file, hoisted, so it's
+  // callable up here despite being defined later.
+  email: (() => {
+    const { firstName, lastName } = splitCustomerName(c.name);
+    return `${firstName.toLowerCase()}.${lastName.toLowerCase()}@example.com`;
+  })(),
 }));
 
 const OUTBOUND_TEAMS: NonNullable<CreateNewOutboundConfig["groups"][number]["contacts"]> = [
@@ -210,14 +222,40 @@ const OUTBOUND_SKILLS: NonNullable<CreateNewOutboundConfig["groups"][number]["co
 const OUTBOUND_CONFIG: CreateNewOutboundConfig = {
   outboundTitle: "New Outbound",
   groups: [
-    { id: "favorites", label: "Favorites", kind: "favorites", emptyMessage: "No favorites yet" },
+    // No dedicated "Favorites" entry in the group dropdown, per explicit
+    // request — this "all" entry replaces it as the DEFAULT/starting
+    // filter instead (`defaultGroupId` below) rather than sitting beside
+    // it as a separate option. Still uses `kind: "favorites"` under the
+    // hood (create-new.tsx's own behavior for that kind is exactly what's
+    // wanted here: idle state shows only starred contacts, and typing a
+    // search widens to every contact across every group — see
+    // `activeGroupContacts`'s own doc comment there), just labeled/keyed
+    // as "All" instead of "Favorites" since that's the only way an agent
+    // reaches this view now. `searchPlaceholder` describes the
+    // search-the-whole-database behavior instead of the generic "Search
+    // all" every other group's fallback text would otherwise produce.
+    // `emptyMessage` per explicit request — plain "Search above to find a
+    // contact" once nothing's favorited yet, no "No favorites yet —"
+    // prefix (that phrasing read like an error/apology for something
+    // missing, when the real point is just "type to search").
+    { id: "all", label: "All", kind: "favorites", emptyMessage: "Search above to find a contact", searchPlaceholder: "Enter phone, email or search term" },
     { id: "agents", label: "Agents", searchPlaceholder: "Search Agents", contacts: OUTBOUND_AGENTS },
     { id: "teams", label: "Teams", searchPlaceholder: "Search teams", contacts: OUTBOUND_TEAMS },
     { id: "skills", label: "Skills", searchPlaceholder: "Search skills", contacts: OUTBOUND_SKILLS },
     { id: "customers", label: "Customers", searchPlaceholder: "Search customers", contacts: OUTBOUND_CUSTOMERS },
     { id: "dialpad", label: "Dial Pad", kind: "dialpad" },
   ],
-  defaultGroupId: "agents",
+  // "all" (not "agents") — per explicit request, the New Outbound picker
+  // now opens on the "All" filter (favorited contacts idle, full-database
+  // search once typed) by default instead of Agents.
+  defaultGroupId: "all",
+  // Per explicit request: the New Outbound picker's contact list isn't
+  // ready to show yet — hide it (and its pagination footer) for every
+  // group, leaving just the group dropdown ("Choose group" — Favorites/
+  // Agents/Teams/Skills/Customers) and its search field visible above an
+  // empty body. See `CreateNewOutboundConfig.hideContactList`'s own doc
+  // comment in create-new.tsx. Remove this once the real list is ready.
+  hideContactList: true,
   channelOptions: [
     { id: "voice",    label: "Call",     selectLabel: "Voice", icon: <Phone         className="h-5 w-5" strokeWidth={1.5} /> },
     { id: "email",    label: "Email",                          icon: <Mail          className="h-5 w-5" strokeWidth={1.5} /> },
@@ -367,18 +405,26 @@ interface ActiveInteraction {
    *  mirroring `InteractionNavItem`'s own auto-select-newest rule) and by
    *  `handleChannelSelect` (a row or tab click). */
   currentChannelId?: string;
-  /** Set once, at the moment this interaction's card is first created (the
-   *  `idx === -1` branch in `handleStartCall`/`handleQuickDial`/
-   *  `handleRedial`/`handleOpenAssignmentFromNotification`), never touched
-   *  again afterward — this app has no real backend to load prior message
-   *  history from, so a freshly-launched card genuinely has none yet,
-   *  unlike `initialInteraction` (a page seeded to start already mid-call,
-   *  which leaves this `undefined`/falsy on purpose so it keeps showing
-   *  real content). Drives `InteractionTranscript`'s empty "just the
-   *  session details, no messages yet" state for a brand-new SMS
-   *  interaction, per explicit request — re-selecting an interaction that
-   *  already existed (e.g. clicking Ethan Zhang's card) keeps this `false`/
-   *  unset and so keeps showing its full mock chat body instead. */
+  /** Set once, at the moment this interaction's card is first created via
+   *  an agent-INITIATED outbound launch — the `idx === -1` branch in
+   *  `handleStartCall`/`handleQuickDial`/`handleRedial` only — never
+   *  touched again afterward. Deliberately NOT set by
+   *  `handleOpenAssignmentFromNotification`: a notification (new case/
+   *  escalation/agent chat) represents an already-existing, already-routed
+   *  conversation with real prior history, not a blank-slate interaction
+   *  the agent is originating — e.g. clicking Ethan Zhang's "New SMS"
+   *  notification must keep showing his full mock chat body, not the
+   *  empty state (this was a real bug: an earlier pass set it there too,
+   *  which wrongly blanked out his conversation).
+   *
+   *  This app has no real backend to load prior message history from, so
+   *  a genuinely agent-launched card has none yet, unlike
+   *  `initialInteraction` (a page seeded to start already mid-call, which
+   *  leaves this `undefined`/falsy on purpose so it keeps showing real
+   *  content) or a notification-opened card (also left falsy, for the
+   *  reason above). Drives `InteractionTranscript`'s empty "just the
+   *  session details, no messages yet" state for a brand-new outbound SMS
+   *  interaction, per explicit request. */
   startedFresh?: boolean;
 }
 
@@ -3043,6 +3089,48 @@ function buildLatestInteraction(customerName: string | undefined, recordId: stri
   };
 }
 
+// "Latest Note" summary shown on the Overview tab, directly below "Latest
+// Interaction" — same deterministic-synthesis approach (no real per-
+// customer notes data source yet) as `buildLatestInteraction` above, just
+// its own pools/salt so a given customer doesn't land on the same pool
+// indexes for both cards.
+interface CustomerLatestNote {
+  timeAgo: string;
+  author: string;
+  note: string;
+}
+
+const CUSTOMER_LATEST_NOTE_TIME_AGO_POOL = [
+  "1 day ago", "4 days ago", "1 week ago", "2 weeks ago", "1 month ago", "2 months ago",
+];
+
+const CUSTOMER_LATEST_NOTE_POOL = [
+  "Customer prefers email follow-up over phone calls going forward.",
+  "Flagged as a long-tenured account — check for loyalty offers before escalating.",
+  "Prefers to be addressed by first name; mentioned this during last contact.",
+  "Has a pending shipment; hold off on billing-related outreach until it arrives.",
+  "Requested callback outside of standard business hours — see availability note on file.",
+  "Previously disputed a charge that was resolved in the customer's favor; handle related questions with extra care.",
+];
+
+/** Deterministic per-customer "Latest Note" — same `hashSeed`-on-`recordId`
+ *  approach as `buildLatestInteraction`, salted with a different suffix so
+ *  it doesn't land on the same pool indexes. `author` reuses the real
+ *  `OUTBOUND_AGENTS` roster, same as `buildLatestInteraction`'s
+ *  `handledBy`. */
+function buildLatestNote(customerName: string | undefined, recordId: string): CustomerLatestNote {
+  const seed = hashSeed(`${recordId || customerName || "customer"}-latest-note`);
+  const timeAgo = CUSTOMER_LATEST_NOTE_TIME_AGO_POOL[seed % CUSTOMER_LATEST_NOTE_TIME_AGO_POOL.length];
+  const note = CUSTOMER_LATEST_NOTE_POOL[Math.floor(seed / 3) % CUSTOMER_LATEST_NOTE_POOL.length];
+  const author = OUTBOUND_AGENTS[Math.floor(seed / 7) % OUTBOUND_AGENTS.length];
+
+  return {
+    timeAgo,
+    author: author?.name ?? "Support Team",
+    note,
+  };
+}
+
 // Placeholder tab set (per reference screenshot). The screenshot itself
 // showed "Interactions" active, but the panel should open on "Overview"
 // (index 0) by default — so `activeTab` below just starts at 0 rather than
@@ -3430,6 +3518,7 @@ function CustomerInformationPanelBody({
   customerName,
   fields,
   latestInteraction,
+  latestNote,
 }: {
   activeTab: number;
   /** Needed here (not just by `buildCustomerInfoFields`) for the Detail
@@ -3443,6 +3532,11 @@ function CustomerInformationPanelBody({
   /** Built per-interaction by `buildLatestInteraction` — see that
    *  function's own doc comment. */
   latestInteraction: CustomerLatestInteraction;
+  /** Built per-interaction by `buildLatestNote` — see that function's own
+   *  doc comment. Renders as its own accordion directly below Latest
+   *  Interaction (see the "Latest Interaction"/"Latest Note" column
+   *  comment below). */
+  latestNote: CustomerLatestNote;
 }) {
   return (
     <div className="flex flex-col">
@@ -3465,15 +3559,15 @@ function CustomerInformationPanelBody({
           `activeTab` state both this body and that header tab row need
           and passes this component just the number.
 
-          This field list and the Latest Interaction accordion below it are
-          now both explicitly gated to the Overview tab (`activeTab ===
-          ...indexOf("Overview")`) — previously only the accordion had that
-          gate, so this list rendered on every tab, including the new
-          Detail tab added below, which shows its own full editable version
-          of the same fields (`CustomerDetailTabContent`) and would
-          otherwise show them twice.
+          This field list and the Latest Interaction/Latest Note column
+          below it are now both explicitly gated to the Overview tab
+          (`activeTab === ...indexOf("Overview")`) — previously only the
+          accordions had that gate, so this list rendered on every tab,
+          including the new Detail tab added below, which shows its own
+          full editable version of the same fields
+          (`CustomerDetailTabContent`) and would otherwise show them twice.
 
-          The field list and the Latest Interaction accordion below now
+          The field list and the Latest Interaction/Latest Note column now
           share one `.lyra-card-split-wrap`/`.lyra-card-split` row (see
           lyra-tokens.css) instead of always stacking — reusing the same
           family `DashboardCard` bodies already use for "a couple of
@@ -3497,23 +3591,136 @@ function CustomerInformationPanelBody({
           because its usual pairing is one fixed-width region next to one
           flexible one, not two equal columns. Left as plain children here,
           the two columns took their own natural content width instead —
-          the field list (narrow content) versus the Latest Interaction
-          card (padding + longer text) rendering visibly unequal. The new
-          `.lyra-card-split-even` modifier (lyra-tokens.css) on both fixes
-          that, splitting the row evenly (and correctly resetting back to
-          full-width at the stacked stage, same as `.lyra-container-grid`/
-          `.lyra-form-grid`'s own children — see that modifier's own doc
-          comment for why a bare `flex-1` utility class alone isn't enough
-          here). */}
+          the field list (narrow content) versus the Latest Interaction/
+          Latest Note column (padding + longer text) rendering visibly
+          unequal. The `.lyra-card-split-even` modifier (lyra-tokens.css)
+          on both fixes that, splitting the row evenly (and correctly
+          resetting back to full-width at the stacked stage, same as
+          `.lyra-container-grid`/`.lyra-form-grid`'s own children — see
+          that modifier's own doc comment for why a bare `flex-1` utility
+          class alone isn't enough here).
+
+          Left/right order (row state) and top/bottom order (stacked
+          state) both fall straight out of plain DOM order here — flexbox
+          doesn't reverse either axis without an explicit `row-reverse`/
+          `column-reverse`, so whichever child comes FIRST in the JSX is
+          both the LEFT column in the row state and the TOP block once
+          stacked. Per explicit request, the Latest Interaction/Latest
+          Note column renders first (left when full width, on top of
+          Customer Overview once collapsed) and Customer Overview second
+          (right when full width, below both cards once collapsed) — the
+          reverse of this pair's original order, when Customer Overview
+          used to render first. */}
       {activeTab === CUSTOMER_PANEL_TABS.indexOf("Overview") && (
         <div className="px-4 py-3 lyra-card-split-wrap">
           <div className="lyra-card-split">
+            {/* Latest Interaction + Latest Note column. Grouped under one
+                plain flex column (not its own Accordion — each card below
+                keeps its own independent collapsible Accordion) so the two
+                cards travel together as a single `.lyra-card-split-even`
+                child: one unit sitting left of Customer Overview at full
+                width, both cards stacking above it once collapsed (see the
+                left/right, top/bottom ordering comment above). `gap-4`
+                matches the vertical card-stack spacing already used for
+                the Directory tab's phone-slot list (`CustomerDirectoryTabContent`). */}
+            <div className="flex flex-col gap-4 lyra-card-split-even">
+              {/* Latest Interaction summary. Wrapped in a neutral container
+                  (`bg-lyra-bg-control-subtle`, rounded) per CONTRIBUTING.md's
+                  "Composing panel body content" convention, rather than
+                  sitting flush against the panel background — the
+                  convention to follow for any future card-like block added
+                  here, not a one-off choice for this block alone.
+
+                  Collapsible via lyra-ui's `Accordion` (single item, open by
+                  default) rather than a plain static block, so the panel can
+                  be collapsed once read. Its trigger renders the "Latest
+                  Interaction" title itself — no hand-styled label needed
+                  here at all, which also fixes an earlier mistake: that
+                  label used to be a hand-built `uppercase tracking-wide`
+                  span, applying an all-caps CSS transform to change how it
+                  displayed instead of just typing it correctly — exactly
+                  the thing CONTRIBUTING.md §17 ("Field label casing") says
+                  not to do ("don't add `text-transform`; type the label
+                  text correctly to begin with"). Typing the string as
+                  `"Latest Interaction"` (already correct Title Case) and
+                  letting the shared component's own typography render it is
+                  the fix, not restyling it further.
+
+                  Content itself comes from `latestInteraction` (built by
+                  `buildLatestInteraction`) rather than one fixed placeholder
+                  blurb — see that function's own doc comment for why (it
+                  used to be the exact same "Asked about upgrading her
+                  plan..." summary for every customer, gendered pronoun and
+                  all, regardless of who was actually open). `statusColor`
+                  drives the `Badge`'s `color` instead of a hardcoded
+                  `"green"`, since a synthesized status can land on
+                  "Escalated"/"Pending" too, not just "Resolved". */}
+              <Accordion
+                className={CUSTOMER_INFO_ACCORDION_CLASSNAME}
+                defaultValue="latest-interaction"
+                items={[
+                  {
+                    id: "latest-interaction",
+                    title: "Latest Interaction",
+                    content: (
+                      <div className="flex flex-col gap-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="inline-flex items-center gap-1.5 lyra-body-sm text-lyra-fg-secondary">
+                            <Clock className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
+                            {latestInteraction.timeAgo} · {latestInteraction.channel}
+                          </span>
+                          <Badge color={latestInteraction.statusColor} variant="subtle">
+                            {latestInteraction.status}
+                          </Badge>
+                        </div>
+                        <p className="lyra-body-md text-lyra-fg-default">{latestInteraction.summary}</p>
+                        <span className="lyra-body-sm text-lyra-fg-secondary">
+                          {latestInteraction.caseId} · Handled by {latestInteraction.handledBy}
+                        </span>
+                      </div>
+                    ),
+                  },
+                ]}
+              />
+
+              {/* Latest Note. Same neutral-container + collapsible-
+                  Accordion treatment as Latest Interaction directly above
+                  it (see that block's own comment for the full
+                  container/collapsible rationale — applies identically
+                  here), synthesized by `buildLatestNote` the same
+                  deterministic-per-customer way. No status `Badge` here —
+                  notes don't carry a resolution status the way an
+                  interaction does — just the author + relative time, same
+                  placement `latestInteraction`'s case-id/handled-by line
+                  uses. */}
+              <Accordion
+                className={CUSTOMER_INFO_ACCORDION_CLASSNAME}
+                defaultValue="latest-note"
+                items={[
+                  {
+                    id: "latest-note",
+                    title: "Latest Note",
+                    content: (
+                      <div className="flex flex-col gap-3">
+                        <span className="inline-flex items-center gap-1.5 lyra-body-sm text-lyra-fg-secondary">
+                          <FileText className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
+                          {latestNote.timeAgo}
+                        </span>
+                        <p className="lyra-body-md text-lyra-fg-default">{latestNote.note}</p>
+                        <span className="lyra-body-sm text-lyra-fg-secondary">By {latestNote.author}</span>
+                      </div>
+                    ),
+                  },
+                ]}
+              />
+            </div>
+
             {/* Customer Overview field list. Wrapped in the same neutral
                 container + collapsible `Accordion` treatment as the Latest
-                Interaction block below it (see that block's own comment for
-                the container/collapsible rationale — applies identically
-                here), rather than the field rows sitting flush against the
-                panel background. */}
+                Interaction/Latest Note column beside it (see that column's
+                own comments for the container/collapsible rationale —
+                applies identically here), rather than the field rows
+                sitting flush against the panel background. */}
             <Accordion
               className={cn(CUSTOMER_INFO_ACCORDION_CLASSNAME, "lyra-card-split-even")}
               defaultValue="customer-overview"
@@ -3539,65 +3746,6 @@ function CustomerInformationPanelBody({
                 },
               ]}
             />
-
-            {/* Latest Interaction summary. Wrapped in a neutral container
-                (`bg-lyra-bg-control-subtle`, rounded) per CONTRIBUTING.md's
-                "Composing panel body content" convention, rather than
-                sitting flush against the panel background — the
-                convention to follow for any future card-like block added
-                here, not a one-off choice for this block alone.
-
-                Collapsible via lyra-ui's `Accordion` (single item, open by
-                default) rather than a plain static block, so the panel can
-                be collapsed once read. Its trigger renders the "Latest
-                Interaction" title itself — no hand-styled label needed
-                here at all, which also fixes an earlier mistake: that
-                label used to be a hand-built `uppercase tracking-wide`
-                span, applying an all-caps CSS transform to change how it
-                displayed instead of just typing it correctly — exactly
-                the thing CONTRIBUTING.md §17 ("Field label casing") says
-                not to do ("don't add `text-transform`; type the label
-                text correctly to begin with"). Typing the string as
-                `"Latest Interaction"` (already correct Title Case) and
-                letting the shared component's own typography render it is
-                the fix, not restyling it further.
-
-                Content itself comes from `latestInteraction` (built by
-                `buildLatestInteraction`) rather than one fixed placeholder
-                blurb — see that function's own doc comment for why (it
-                used to be the exact same "Asked about upgrading her
-                plan..." summary for every customer, gendered pronoun and
-                all, regardless of who was actually open). `statusColor`
-                drives the `Badge`'s `color` instead of a hardcoded
-                `"green"`, since a synthesized status can land on
-                "Escalated"/"Pending" too, not just "Resolved". */}
-            <Accordion
-              className={cn(CUSTOMER_INFO_ACCORDION_CLASSNAME, "lyra-card-split-even")}
-              defaultValue="latest-interaction"
-              items={[
-                {
-                  id: "latest-interaction",
-                  title: "Latest Interaction",
-                  content: (
-                    <div className="flex flex-col gap-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="inline-flex items-center gap-1.5 lyra-body-sm text-lyra-fg-secondary">
-                          <Clock className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
-                          {latestInteraction.timeAgo} · {latestInteraction.channel}
-                        </span>
-                        <Badge color={latestInteraction.statusColor} variant="subtle">
-                          {latestInteraction.status}
-                        </Badge>
-                      </div>
-                      <p className="lyra-body-md text-lyra-fg-default">{latestInteraction.summary}</p>
-                      <span className="lyra-body-sm text-lyra-fg-secondary">
-                        {latestInteraction.caseId} · Handled by {latestInteraction.handledBy}
-                      </span>
-                    </div>
-                  ),
-                },
-              ]}
-            />
           </div>
         </div>
       )}
@@ -3618,7 +3766,7 @@ function CustomerInformationPanelBody({
           per explicit follow-up request: a tab alongside Interactions/Tasks/
           Notes/etc., not another entry in the ChannelToggle row. No real
           content yet, same "blank placeholder" treatment the app-header
-          panel buttons (Conversations/Schedule/etc.) already use for a
+          panel buttons (Agent Chat/Schedule/etc.) already use for a
           not-yet-built body — just this tab's own copy ("Coming soon")
           instead of theirs ("Nothing here yet"), so this in-progress tab
           doesn't quietly read as caught-up-and-empty. */}
@@ -3653,6 +3801,7 @@ function CustomerInformationInteriorPanel({
   channels,
   width,
   onWidthChange,
+  exitFullScreenSignal,
 }: {
   open: boolean;
   onClose: () => void;
@@ -3661,6 +3810,16 @@ function CustomerInformationInteriorPanel({
   channels: TrackedChannel[];
   width: number;
   onWidthChange: (width: number) => void;
+  /** Forwarded straight to `InteriorPanel`'s own `exitFullScreenSignal`
+   *  prop (see that prop's doc comment in interior-panel.tsx) — bumped by
+   *  `handleOpenAssignmentFromNotification` so that opening a new
+   *  assignment always exits full screen if this panel happens to be in
+   *  it, per explicit request ("if a new assignment is open and the
+   *  customer information is full screen, exit full screen so the
+   *  interaction is viewable") — otherwise the full-screen Customer
+   *  Information panel would keep covering the newly-opened interaction's
+   *  transcript. */
+  exitFullScreenSignal?: number;
 }) {
   const [activeTab, setActiveTab] = useState(0);
   const fields = useMemo(
@@ -3669,6 +3828,10 @@ function CustomerInformationInteriorPanel({
   );
   const latestInteraction = useMemo(
     () => buildLatestInteraction(customerName, recordId),
+    [customerName, recordId]
+  );
+  const latestNote = useMemo(
+    () => buildLatestNote(customerName, recordId),
     [customerName, recordId]
   );
 
@@ -3710,12 +3873,14 @@ function CustomerInformationInteriorPanel({
       }
       width={width}
       onWidthChange={onWidthChange}
+      exitFullScreenSignal={exitFullScreenSignal}
     >
       <CustomerInformationPanelBody
         activeTab={activeTab}
         customerName={customerName}
         fields={fields}
         latestInteraction={latestInteraction}
+        latestNote={latestNote}
       />
     </InteriorPanel>
   );
@@ -3726,7 +3891,7 @@ function CustomerInformationInteriorPanel({
 type Page = "agent-workspace" | "agent" | "outbound" | "login";
 
 // Shared default width for the single app-header panel (Search/Customers/
-// Accounts/Tickets/WEM/Screen Pop/Conversations/Schedule/Notifications) —
+// Accounts/Tickets/WEM/Screen Pop/Agent Chat/Schedule/Notifications) —
 // renamed from `AI_PANEL_DEFAULT_WIDTH` now that Ask AI (its original sole
 // occupant, back when each of these was its own independently-sized
 // `Draggable`) has been removed from this app.
@@ -3873,7 +4038,7 @@ export function AgentNextGenPage({
   type PanelState = "closed" | "open" | "closing";
 
   /* ── Single-container app-header panel ──
-     Screen Pop/Conversations/Schedule/Notifications/Ask AI used to each be
+     Screen Pop/Agent Chat/Schedule/Notifications/Ask AI used to each be
      an independently open/mounted/positioned/sized `Draggable` (five full
      copies of this state, plus a `dockPanelExclusively` helper enforcing
      "only one of the five may be docked at once"). Per request ("Multiple
@@ -3944,7 +4109,7 @@ export function AgentNextGenPage({
   // row in this menu, which opens the shared panel exactly like the header
   // icon would.
   // Default pinned set — header shows (right to left) Notifications,
-  // Schedule, Conversations, Customers, Search; Accounts/Tickets/WEM/Screen
+  // Schedule, Agent Chat, Customers, Search; Accounts/Tickets/WEM/Screen
   // Pop start unpinned (reachable only via "View All Apps" until the user
   // pins them). `PANEL_KEY_INITIAL_ORDER` below already places these five
   // in that exact left-to-right sequence (search < customers <
@@ -4044,6 +4209,21 @@ export function AgentNextGenPage({
   // needs to start at the same 425 `maxWidth` itself, per explicit request
   // that the panel open at its max width initially, not its min.
   const [customerPanelWidth, setCustomerPanelWidth] = useState(425);
+  // Bumped by every interaction-opening handler — `handleStartCall` (the
+  // top-left "+" Start Interaction button), `handleQuickDial`, `handleRedial`,
+  // and `handleOpenAssignmentFromNotification` (new-assignment notification
+  // click) — forwarded to `CustomerInformationInteriorPanel`'s
+  // `exitFullScreenSignal` prop, which forwards it straight to
+  // `InteriorPanel`'s own prop of the same name. Forces the Customer
+  // Information panel out of full screen whenever ANY new (or reopened)
+  // interaction is activated, per explicit request: a full-screen customer
+  // panel would otherwise keep covering the newly-opened interaction's
+  // transcript — first reported for notification clicks, then again for the
+  // top-left outbound button, so this now covers every launch path rather
+  // than one at a time. Plain incrementing counter — any distinct value on
+  // each bump works, since `InteriorPanel` only compares it against its own
+  // previous render, not this value's own meaning.
+  const [customerPanelExitFullScreenSignal, setCustomerPanelExitFullScreenSignal] = useState(0);
 
   // The Customer Information panel belongs to the interaction it was opened
   // from — its only trigger is the toggle button on the interaction
@@ -4201,6 +4381,12 @@ export function AgentNextGenPage({
     // the agent last left it (open, or toggled closed) rather than
     // re-forcing it open every time.
     if (isNewInteraction) setCustomerPanelOpen(true);
+    // Exit full screen (see `customerPanelExitFullScreenSignal`'s own doc
+    // comment) — unconditional, same as `handleOpenAssignmentFromNotification`:
+    // starting a new outbound interaction from the top-left "+" button
+    // should always bring it into view, even if Customer Information
+    // happens to currently be full-screen from a previous interaction.
+    setCustomerPanelExitFullScreenSignal((n) => n + 1);
   };
 
   const handleQuickDial = (phoneNumber: string) => {
@@ -4230,6 +4416,8 @@ export function AgentNextGenPage({
     setActiveInteractionId(id);
     setNavOpen(true);
     if (isNewInteraction) setCustomerPanelOpen(true);
+    // Exit full screen — see `handleStartCall`'s identical call for why.
+    setCustomerPanelExitFullScreenSignal((n) => n + 1);
   };
 
   /* "Redial" from the home tab's Contact History card — same merge-by-id
@@ -4279,6 +4467,8 @@ export function AgentNextGenPage({
     setActiveInteractionId(id);
     setNavOpen(true);
     if (isNewInteraction) setCustomerPanelOpen(true);
+    // Exit full screen — see `handleStartCall`'s identical call for why.
+    setCustomerPanelExitFullScreenSignal((n) => n + 1);
   };
 
   /* "Unassign & Dismiss" — `InteractionNavItem` itself decides which of
@@ -4569,13 +4759,23 @@ export function AgentNextGenPage({
     setInteractions((prev) => {
       const idx = prev.findIndex((i) => i.id === id);
       if (idx === -1) {
+        // NOT `startedFresh: true` here, unlike `handleStartCall`'s own
+        // new-card branch — a notification (new case/escalation/agent
+        // chat) represents an already-existing, already-routed
+        // conversation with real prior history (e.g. Ethan Zhang's "New
+        // SMS" notification), not a brand-new outbound interaction the
+        // agent is originating from scratch. Marking it fresh made
+        // clicking that notification wrongly show `InteractionTranscript`'s
+        // empty "session details only" state instead of its full mock
+        // conversation — `startedFresh` must stay reserved for the actual
+        // agent-initiated launch paths (`handleStartCall`/`handleQuickDial`/
+        // `handleRedial`).
         return [...prev, {
           id,
           customerName: notification.subtitle,
           recordId: generateCaseId(),
           channels: [newChannel],
           currentChannelId: newChannel.id,
-          startedFresh: true,
         }];
       }
       return prev.map((interaction, i) =>
@@ -4585,6 +4785,12 @@ export function AgentNextGenPage({
     setActiveInteractionId(id);
     setNavOpen(true);
     if (isNewInteraction) setCustomerPanelOpen(true);
+    // Exit full screen (see `customerPanelExitFullScreenSignal`'s own doc
+    // comment above) — unconditional, not gated on `isNewInteraction`: even
+    // re-opening an assignment that already had a card should bring its
+    // interaction back into view if the Customer Information panel happens
+    // to currently be covering the whole container in full-screen mode.
+    setCustomerPanelExitFullScreenSignal((n) => n + 1);
     setNotifications((prev) => prev.map((n) => (n.id === notification.id ? { ...n, read: true } : n)));
   };
 
@@ -4599,15 +4805,29 @@ export function AgentNextGenPage({
     onClearAll: () => setNotifications([]),
     onDismiss: (id: string) => setNotifications((prev) => prev.filter((n) => n.id !== id)),
     // "New Assignment" (`type: "new-case"`) and "Escalation" notifications
-    // both open a real assignment — the rest (New Chat/Missed Call) keep
-    // the original "just mark it read" behavior, since they don't represent
-    // an assignment this app actually models opening.
-    onNotificationClick: (n: AgentNotification) =>
-      n.type === "new-case" || n.type === "escalation"
-        ? handleOpenAssignmentFromNotification(n)
-        : setNotifications((prev) => prev.map((i) => i.id === n.id ? { ...i, read: true } : i)),
+    // both open a real assignment. "New Agent Chat" (`type:
+    // "new-agent-chat"`, e.g. Sarah Miller) is different from either —
+    // per explicit request, clicking it doesn't open an assignment card at
+    // all, it switches the shared header panel straight from Notifications
+    // to Agent Chat (the renamed "Conversations" panel — see
+    // `PANEL_KEY_METADATA.conversations`), since an agent-to-agent chat
+    // lives there, not in the interaction list. The rest (New Chat/Missed
+    // Call) keep the original "just mark it read" behavior, since they
+    // don't represent anything this app actually models opening.
+    onNotificationClick: (n: AgentNotification) => {
+      if (n.type === "new-case" || n.type === "escalation") {
+        handleOpenAssignmentFromNotification(n);
+        return;
+      }
+      if (n.type === "new-agent-chat") {
+        handlePanelButtonClick("conversations")();
+        setNotifications((prev) => prev.map((i) => i.id === n.id ? { ...i, read: true } : i));
+        return;
+      }
+      setNotifications((prev) => prev.map((i) => i.id === n.id ? { ...i, read: true } : i));
+    },
   });
-  // Conversations/Schedule — no bespoke component (same blank empty-state
+  // Agent Chat/Schedule — no bespoke component (same blank empty-state
   // `DraggablePanel` itself defaults to when given no children).
   const blankPanelContent = (title: string): EmbeddablePanelContent => ({
     title,
@@ -4638,7 +4858,7 @@ export function AgentNextGenPage({
       </div>
     ),
   };
-  // Search — same blank body as Conversations/Schedule, plus a
+  // Search — same blank body as Agent Chat/Schedule, plus a
   // `SearchInput` in `headerContent` (same "fixed above the divider"
   // treatment Screen Pop's app-select uses above) rather than a body
   // form field, so the query box stays put as results (once there's a
@@ -4661,7 +4881,7 @@ export function AgentNextGenPage({
   };
   const contentByPanelKey: Record<PanelKey, EmbeddablePanelContent> = {
     notif: notifContent,
-    conversations: blankPanelContent("Conversations"),
+    conversations: blankPanelContent("Agent Chat"),
     schedule: blankPanelContent("Schedule"),
     screenpop: screenPopContent,
     customers: blankPanelContent("Customers"),
@@ -4727,7 +4947,7 @@ export function AgentNextGenPage({
   // count, its own portal, etc.) for that one button.
   const PANEL_KEY_METADATA: Record<PanelKey, { label: string; icon: LucideIcon }> = {
     notif: { label: "Notifications", icon: Bell },
-    conversations: { label: "Conversations", icon: MessageSquare },
+    conversations: { label: "Agent Chat", icon: MessageSquare },
     schedule: { label: "Schedule", icon: CalendarDays },
     screenpop: { label: "Screen Pop", icon: MonitorUp },
     customers: { label: "Customers", icon: Users },
@@ -5030,7 +5250,7 @@ export function AgentNextGenPage({
         actions={
           <>
             {/* Search / Customers / Accounts / Tickets / WEM / Screen Pop /
-                Conversations / Schedule / Notifications / Ask AI — all ten
+                Agent Chat / Schedule / Notifications / Ask AI — all ten
                 now go through lyra-ui's `ActionIconButton` (`size="xl"`,
                 44px), the single canonical AppHeader icon-button shape.
                 These used to be hand-rolled `<button>`s (`h-10 w-10
@@ -5042,11 +5262,14 @@ export function AgentNextGenPage({
                 44px/`rounded-lyra-sm` as the confirmed canonical AppHeader
                 size, so this row now matches `Header.tsx`'s (and lyra-ui's
                 own `AppHeader.stories.tsx`) icon buttons instead of
-                diverging from them. Labeled "Conversations" (renamed from
-                "Messages" — same trigger/panel, just the label). Screen Pop
-                sits to the left of Conversations, using lucide's
-                `MonitorUp` (monitor + up arrow) to match the requested icon
-                exactly.
+                diverging from them. Labeled "Agent Chat" — renamed from
+                "Conversations" (itself previously renamed from "Messages"),
+                per explicit request tying it to the same click behavior
+                Sarah Miller's "New Agent Chat" notification now switches to
+                (see `onNotificationClick`'s own doc comment above) — same
+                trigger/panel throughout, just the label. Screen Pop sits to
+                the left of Agent Chat, using lucide's `MonitorUp` (monitor +
+                up arrow) to match the requested icon exactly.
 
                 Search/Customers/Accounts/Tickets/WEM all share the exact
                 same single-container panel every other button here does
@@ -5527,6 +5750,7 @@ export function AgentNextGenPage({
                         channels={activeInteraction.channels}
                         width={customerPanelWidth}
                         onWidthChange={setCustomerPanelWidth}
+                        exitFullScreenSignal={customerPanelExitFullScreenSignal}
                       />
                     )}
                   </div>
