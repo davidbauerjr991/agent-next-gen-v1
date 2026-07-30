@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import * as PopoverPrimitive from "@radix-ui/react-popover";
 import * as AccordionPrimitive from "@radix-ui/react-accordion";
 import { cn } from "@/lib/utils";
@@ -8,7 +8,6 @@ import {
   AppMenu,
   CXoneLogo,
   Modal,
-  useAiPanelContent,
   useAgentNotificationsContent,
   Draggable,
   ContainerHeader,
@@ -17,14 +16,16 @@ import {
   Container,
   InteriorPanel,
   PageHeader,
-  PanelHeader,
   Button,
   Textarea,
   Label,
   Accordion,
   ActionIconButton,
-  AiSparkleIcon,
+  KebabMenuButton,
+  PanelPinButton,
+  useColumnReorder,
   Tag,
+  TagPicker,
   Input,
   LeftNav,
   CreateNew,
@@ -55,7 +56,6 @@ import {
   RadioGroupItem,
   DateRangePicker,
   filterChipVariants,
-  Menu,
   Select,
   Checkbox,
   DatePicker,
@@ -104,6 +104,8 @@ import {
   Gauge,
   ChevronDown,
   MoreVertical,
+  LayoutGrid,
+  ArrowUpDown,
   RotateCcw,
   UserPlus,
   UserRound,
@@ -113,10 +115,15 @@ import {
   CalendarDays,
   MonitorUp,
   GripVertical,
+  Users,
+  Building2,
+  Ticket,
+  Search,
+  Bell,
+  Pin,
   History,
   ChevronRight,
   Copy,
-  Tags,
   Paperclip,
   Bold,
   Italic,
@@ -428,13 +435,148 @@ function buildNavItems(
   ];
 }
 
+/* ── Assignments sort ──
+   "Last Updated" ranks each assignment by its most recently added/touched
+   channel (the highest `startTick` among its open channels); "Start Date" by
+   its oldest/first one (the lowest). Both are the only time signal a
+   `TrackedChannel` actually carries in this prototype (see `startTick`'s own
+   doc comment) — no separate "last activity" field exists to track finer-
+   grained events (a new message, a status change, etc.), so "most recently
+   added a channel" is the closest real proxy available for "most recently
+   updated." Both orders sort newest-first (descending), the conventional
+   default for either reading. */
+type AssignmentSortValue = "lastUpdated" | "startDate";
+
+const ASSIGNMENT_SORT_OPTIONS: { value: AssignmentSortValue; label: string }[] = [
+  { value: "lastUpdated", label: "Last Updated" },
+  { value: "startDate", label: "Start Date" },
+];
+
+function sortAssignments(interactions: ActiveInteraction[], sort: AssignmentSortValue): ActiveInteraction[] {
+  const key = (i: ActiveInteraction) => {
+    const ticks = i.channels.map((c) => c.startTick);
+    return sort === "startDate" ? Math.min(...ticks) : Math.max(...ticks);
+  };
+  return [...interactions].sort((a, b) => key(b) - key(a));
+}
+
+/* Sort trigger — same `Popover` + `RadioGroup` composition `DateFilterChip`
+   already uses for an identical "single choice from a short, mutually
+   exclusive list" picker (see that component's own doc comment), just an
+   icon-only `ActionIconButton` trigger instead of a labeled chip (there's no
+   room for chip text this deep in the rail). Closes itself on selection —
+   unlike `DateFilterChip`, which stays open in case "Custom" reveals a
+   second field to fill in, picking either option here is the whole
+   interaction, so there's nothing left to keep the popover open for. */
+function AssignmentsSortButton({
+  value,
+  onValueChange,
+}: {
+  value: AssignmentSortValue;
+  onValueChange: (value: AssignmentSortValue) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selectedLabel = ASSIGNMENT_SORT_OPTIONS.find((o) => o.value === value)?.label ?? "";
+
+  return (
+    <Tooltip content={`Sort by: ${selectedLabel}`} placement="right" disabled={open}>
+      <span className="inline-flex">
+        <Popover
+          open={open}
+          onOpenChange={setOpen}
+          placement="bottom"
+          content={
+            <div className="flex flex-col gap-1 p-3 w-[180px]">
+              <RadioGroup
+                value={value}
+                onValueChange={(v) => {
+                  onValueChange(v as AssignmentSortValue);
+                  setOpen(false);
+                }}
+              >
+                {ASSIGNMENT_SORT_OPTIONS.map((option) => (
+                  <RadioGroupItem key={option.value} value={option.value} label={option.label} />
+                ))}
+              </RadioGroup>
+            </div>
+          }
+        >
+          {/* `aria-label`, not `title` — `ActionIconButton`/`Button` auto-
+              wraps an icon button in its OWN `Tooltip` whenever `title` is
+              set (button.tsx), which stacked a second, redundant "Sort by:
+              ..." tooltip underneath this component's own outer one
+              (confirmed via screenshot — two overlapping tooltips). Passing
+              `aria-label` instead keeps the accessible name (it flows
+              through Button's own `{...props}` spread, which runs after —
+              and so overrides — its internal `aria-label={isIconVariant ?
+              title : undefined}` line) without triggering that second
+              Tooltip, since only `title` opts a button into it. */}
+          <ActionIconButton size="sm" aria-label={`Sort by: ${selectedLabel}`} aria-expanded={open}>
+            <ArrowUpDown className="h-3.5 w-3.5" strokeWidth={1.5} />
+          </ActionIconButton>
+        </Popover>
+      </span>
+    </Tooltip>
+  );
+}
+
+/* "Assignments (N active)" section caption — sits directly below the
+   Home/Settings rail (LeftNav's `itemsFirst`, left-nav.tsx) and above the
+   list of InteractionNavItem cards, both passed together as `header` at the
+   LeftNav call site below. `count` is `interactions.length`, the exact same
+   live list the cards render from, so the two numbers can't drift apart.
+   Collapsed to icon-only rail (`expanded` false), the text has nowhere to
+   go — but the sort button is a real standalone action, not just a label,
+   so it stays reachable as a lone icon directly below Settings (the last
+   `items` rail button above it) rather than disappearing along with the
+   text the way the rest of this caption does.
+
+   Sort button only shows once there's actually something to sort — with
+   zero or one assignment there's only one possible order either way, so
+   the control would just be a dead click. Collapsed rail: with the button
+   hidden, there's nothing left in that state to show at all, so the whole
+   caption returns null instead of an empty centered row. */
+function AssignmentsSectionCaption({
+  expanded,
+  count,
+  sort,
+  onSortChange,
+}: {
+  expanded?: boolean;
+  count: number;
+  sort: AssignmentSortValue;
+  onSortChange: (value: AssignmentSortValue) => void;
+}) {
+  const showSort = count > 1;
+  if (!expanded) {
+    if (!showSort) return null;
+    return (
+      <div className="flex justify-center pb-2">
+        <AssignmentsSortButton value={sort} onValueChange={onSortChange} />
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-3 pb-2">
+      <Separator />
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-baseline gap-1">
+          <span className="lyra-body-md-emphasis text-lyra-fg-default">Assignments</span>
+          <span className="lyra-body-md text-lyra-fg-secondary">({count} active)</span>
+        </div>
+        {showSort && <AssignmentsSortButton value={sort} onValueChange={onSortChange} />}
+      </div>
+    </div>
+  );
+}
+
 /* ── Sample notifications ── */
 
 const INITIAL_NOTIFICATIONS: AgentNotification[] = [
-  { id: "1", type: "new-case",    title: "New Case",    subtitle: "Noah Patel",    timestamp: "13m ago", read: false },
+  { id: "1", type: "new-case",    title: "New Assignment", subtitle: "Noah Patel",    timestamp: "13m ago", read: false },
   { id: "2", type: "new-chat",    title: "New Chat",    subtitle: "Sarah Miller",  timestamp: "18m ago", read: false },
   { id: "3", type: "escalation",  title: "Escalation",  subtitle: "Lauren Kim",    timestamp: "24m ago", read: false },
-  { id: "4", type: "new-case",    title: "New Case",    subtitle: "Ethan Zhang",   timestamp: "37m ago", read: true  },
+  { id: "4", type: "new-case",    title: "New Assignment", subtitle: "Ethan Zhang",   timestamp: "37m ago", read: true  },
   { id: "5", type: "new-chat",    title: "New Chat",    subtitle: "Olivia Reed",   timestamp: "51m ago", read: true  },
   { id: "6", type: "missed-call", title: "Missed Call", subtitle: "David Brown",   timestamp: "1h ago",  read: true  },
 ];
@@ -503,6 +645,19 @@ function getGreetingPeriod(): "morning" | "afternoon" | "evening" {
   if (hour < 12) return "morning";
   if (hour < 18) return "afternoon";
   return "evening";
+}
+
+/* Dashboard page-header subtitle — "Wednesday, July 29, 2026 · 9:41 AM",
+   read fresh on every render. Ticks live for free: the component's
+   `clockTick` state (see the shared elapsed-time clock a bit further down)
+   already re-renders this whole tree once a second for the open-channel
+   elapsed timers, so this just reads `new Date()` again on whichever render
+   that produces — no separate interval needed here. */
+function formatHeaderDateTime(): string {
+  const now = new Date();
+  const datePart = now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  const timePart = now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return `${datePart} · ${timePart}`;
 }
 
 /* Welcome modal — last login timestamp, assigned-skills count, and live
@@ -868,8 +1023,8 @@ function DateFilterChip({ onValueChange }: { onValueChange?: (value: DateFilterV
             </div>
           }
         >
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             aria-label={open ? "Close date filter" : `Date filter: ${selectedLabel}`}
             className={cn(filterChipVariants({ variant: "default" }), "rounded-lyra-md lyra-container-header-filter-trigger")}
           >
@@ -883,7 +1038,7 @@ function DateFilterChip({ onValueChange }: { onValueChange?: (value: DateFilterV
             </span>
             <ChevronDown className={cn("lyra-container-header-filter-full h-3.5 w-3.5 flex-shrink-0 transition-transform", open && "rotate-180")} strokeWidth={1.5} aria-hidden="true" />
             <MoreVertical className="lyra-container-header-filter-compact h-4 w-4" strokeWidth={1.5} aria-hidden="true" />
-          </button>
+          </Button>
         </Popover>
       </span>
     </Tooltip>
@@ -1377,8 +1532,8 @@ function ContactHistoryDateFilterChip({ onValueChange }: { onValueChange?: (valu
             </div>
           }
         >
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             aria-label={open ? "Close date filter" : `Date filter: ${selectedLabel}`}
             className={cn(filterChipVariants({ variant: "default" }), "rounded-lyra-md lyra-container-header-filter-trigger")}
           >
@@ -1392,7 +1547,7 @@ function ContactHistoryDateFilterChip({ onValueChange }: { onValueChange?: (valu
             </span>
             <ChevronDown className={cn("lyra-container-header-filter-full h-3.5 w-3.5 flex-shrink-0 transition-transform", open && "rotate-180")} strokeWidth={1.5} aria-hidden="true" />
             <MoreVertical className="lyra-container-header-filter-compact h-4 w-4" strokeWidth={1.5} aria-hidden="true" />
-          </button>
+          </Button>
         </Popover>
       </span>
     </Tooltip>
@@ -1554,21 +1709,27 @@ function nextInteractionSortDirection(current: SortDirection): SortDirection {
 }
 
 /* Per-row "more options" kebab — opens a Menu with a single contextual
-   action: voice interactions offer "Redial", everything else offers "Reopen". */
+   action: voice interactions offer "Redial", everything else offers "Reopen".
+   Built on the shared `KebabMenuButton` (composes `MenuRadix`) rather than a
+   hand-rolled `Popover` + raw `<button>` + `Menu`, per CONTRIBUTING.md's
+   Rule 0/"every menu must be built on Menu" — this exact trigger+menu shape
+   is what `KebabMenuButton` exists for, and its default 24px size (not this
+   row's old hand-picked 28px) matches every other per-row kebab in the
+   design system (e.g. channel-row.tsx). No local open/setOpen state needed
+   either — `MenuRadix` (unlike the bare `Menu` this used to wrap in a
+   hand-rolled `Popover`) already closes itself on select. */
 function InteractionRowActions({ interaction }: { interaction: ContactInteraction }) {
-  const [open, setOpen] = useState(false);
   const isVoice = interaction.type === "voice";
   const isAssignedToMe = interaction.owner === CURRENT_AGENT_NAME;
 
   const items: MenuEntry[] = [];
   items.push(
     isVoice
-      ? { id: "redial", label: "Redial", icon: <PhoneOutgoing className="h-4 w-4" strokeWidth={1.5} />, onClick: () => setOpen(false) }
+      ? { id: "redial", label: "Redial", icon: <PhoneOutgoing className="h-4 w-4" strokeWidth={1.5} /> }
       : {
           id: interaction.status === "open" ? "open-interaction" : "reopen",
           label: interaction.status === "open" ? "Open Interaction" : "Reopen",
           icon: <RotateCcw className="h-4 w-4" strokeWidth={1.5} />,
-          onClick: () => setOpen(false),
         }
   );
   if (!isAssignedToMe) {
@@ -1576,7 +1737,6 @@ function InteractionRowActions({ interaction }: { interaction: ContactInteractio
       id: "assign-to-me",
       label: "Assign To Me",
       icon: <UserPlus className="h-4 w-4" strokeWidth={1.5} />,
-      onClick: () => setOpen(false),
     });
   }
   items.push("separator");
@@ -1584,20 +1744,9 @@ function InteractionRowActions({ interaction }: { interaction: ContactInteractio
     id: "customer-info",
     label: "Customer Information",
     icon: <UserRound className="h-4 w-4" strokeWidth={1.5} />,
-    onClick: () => setOpen(false),
   });
 
-  return (
-    <Popover open={open} onOpenChange={setOpen} placement="bottom" content={<Menu items={items} />}>
-      <button
-        type="button"
-        aria-label="More options"
-        className="flex h-7 w-7 items-center justify-center rounded-lyra-sm text-lyra-fg-secondary hover:bg-lyra-bg-surface-shell transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus focus-visible:ring-offset-2"
-      >
-        <MoreVertical className="h-4 w-4" strokeWidth={1.5} aria-hidden="true" />
-      </button>
-    </Popover>
-  );
+  return <KebabMenuButton items={items} ariaLabel="More options" />;
 }
 
 function InteractionsTable({ interactions }: { interactions: ContactInteraction[] }) {
@@ -1750,6 +1899,21 @@ interface TranscriptMessage {
    Two mock sessions here (a closed first contact, then a shorter follow-up)
    are enough to demonstrate the separator-per-session + sticky-stacking
    behavior; still a UI prototype, not real per-interaction session data. */
+// Status → `Tag` variant for `TranscriptSessionSeparator`'s pill — a small,
+// local map rather than reusing `CUSTOMER_LATEST_INTERACTION_STATUS_POOL`
+// (Customer Information panel's own status pool): that one's a random-draw
+// pool for a different feature's synthesized data and doesn't even include
+// "Open" (every draw there is Resolved/Escalated/Pending), so it isn't
+// actually the same vocabulary. `Tag` (pill shape), not `Badge` — per
+// explicit request, matching the same pill-shaped tag treatment used
+// elsewhere in this transcript (e.g. the applied message tags just above
+// the composer). Falls back to "neutral" for any future
+// `TranscriptSession.status` value not listed here, rather than throwing.
+const TRANSCRIPT_SESSION_STATUS_VARIANT: Record<string, TagVariant> = {
+  Resolved: "success",
+  Open: "info",
+};
+
 interface TranscriptSession {
   id: string;
   caseId: string;
@@ -1867,7 +2031,11 @@ const TRANSCRIPT_SESSIONS: TranscriptSession[] = [
     channel: "SMS",
     skill: "SMS Support",
     agent: "John Smith",
-    status: "Resolved",
+    // The follow-up session (the customer came back because the refund
+    // still hadn't appeared) is genuinely still open, unlike the first
+    // session it follows up on — per explicit request, so the two session
+    // pills read differently rather than both saying "Resolved".
+    status: "Open",
     messages: [
       {
         id: "m11",
@@ -1934,6 +2102,7 @@ function TranscriptMessageBubble({
   onTagPickerOpenChange,
   onAddTag,
   onRemoveTag,
+  onClearTags,
   onCopy,
 }: {
   message: TranscriptMessage;
@@ -1941,6 +2110,7 @@ function TranscriptMessageBubble({
   onTagPickerOpenChange: (open: boolean) => void;
   onAddTag: (option: Omit<TranscriptTag, "id">) => void;
   onRemoveTag: (tagId: string) => void;
+  onClearTags: () => void;
   onCopy: () => void;
 }) {
   const isCustomer = message.sender === "customer";
@@ -1991,62 +2161,47 @@ function TranscriptMessageBubble({
               <ActionIconButton size="sm" title="Copy message" onClick={onCopy}>
                 <Copy className="h-3.5 w-3.5" strokeWidth={1.5} />
               </ActionIconButton>
-              <Popover
+              {/* `TagPicker` (lyra-ui) — a Popover-based "pick a colored tag
+                  pill" flyout, extracted from what used to be a hand-rolled
+                  Popover + raw <button> row here. Deliberately a Popover
+                  with custom content, not `Menu` — see tag-picker.tsx's own
+                  doc comment for why forcing a row that's just a colored
+                  pill through `Menu`'s icon+label+trailing template doesn't
+                  fit. */}
+              <TagPicker
+                options={QUICK_TAG_OPTIONS}
+                appliedLabels={message.tags?.map((t) => t.label) ?? []}
                 open={tagPickerOpen}
                 onOpenChange={onTagPickerOpenChange}
-                placement="bottom"
-                header={
-                  <PanelHeader
-                    title="Add tag"
-                    bordered={false}
-                    className="px-5 pb-0"
-                    onClose={() => onTagPickerOpenChange(false)}
-                  />
-                }
-                content={
-                  <div className="flex flex-col gap-1 py-2">
-                    {QUICK_TAG_OPTIONS.filter((opt) => !message.tags?.some((t) => t.label === opt.label)).map(
-                      (opt) => (
-                        <button
-                          key={opt.label}
-                          type="button"
-                          className="group flex items-center rounded-lyra-sm px-1 py-1 text-left"
-                          onClick={() => onAddTag(opt)}
-                        >
-                          {/* Hover feedback lives on the tag pill's own
-                              color (darkens slightly) instead of a gray row
-                              background behind it — the pill already
-                              carries the variant's color, so that's what
-                              should visibly react to hovering it.
-                              `brightness` works regardless of which variant
-                              color is in play, no per-variant hover class
-                              needed. */}
-                          <Tag
-                            label={opt.label}
-                            variant={opt.variant}
-                            shape="pill"
-                            className="transition-[filter] group-hover:brightness-95 dark:group-hover:brightness-125"
-                          />
-                        </button>
-                      )
-                    )}
-                    {QUICK_TAG_OPTIONS.every((opt) => message.tags?.some((t) => t.label === opt.label)) && (
-                      <span className="px-1 py-1 lyra-body-sm text-lyra-fg-secondary">All tags added</span>
-                    )}
-                  </div>
-                }
-              >
-                <ActionIconButton size="sm" title="Add tag">
-                  <Tags className="h-3.5 w-3.5" strokeWidth={1.5} />
-                </ActionIconButton>
-              </Popover>
+                onSelect={onAddTag}
+              />
             </div>
           </div>
           {message.tags && message.tags.length > 0 && (
-            <div className={cn("mt-1 flex flex-wrap items-center gap-2", isCustomer ? "flex-row" : "flex-row-reverse")}>
+            <div
+              className={cn(
+                "group/tags mt-1 flex flex-wrap items-center gap-2",
+                isCustomer ? "flex-row" : "flex-row-reverse"
+              )}
+            >
               {message.tags.map((tag) => (
                 <Tag key={tag.id} label={tag.label} variant={tag.variant} shape="pill" onRemove={() => onRemoveTag(tag.id)} />
               ))}
+              {/* Hover-reveal "Clear Tags" — only shows once the applied-tags
+                  row itself is hovered (a separate, named `group/tags` from
+                  the bubble row's own `group` above, so hovering the message
+                  bubble/copy-and-add-tag toolbar doesn't also reveal this).
+                  `variant="ghost"` (button.tsx) — a small, text-only button
+                  is the correct "ghost" per this design system's own
+                  naming, not a guessed style. */}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="opacity-0 transition-opacity group-hover/tags:opacity-100"
+                onClick={onClearTags}
+              >
+                Clear Tags
+              </Button>
             </div>
           )}
         </div>
@@ -2092,7 +2247,7 @@ function TranscriptSessionDetails({ session }: { session: TranscriptSession }) {
         <div key={label1} className="lyra-form-grid">
           <div className="flex items-center justify-between gap-4">
             <Label label={label1} />
-            <span className={cn("lyra-body-md text-lyra-fg-secondary", label1 === "Contact ID" && "font-mono")}>
+            <span className="lyra-body-md text-lyra-fg-secondary">
               {value1}
             </span>
           </div>
@@ -2184,14 +2339,15 @@ function TranscriptSessionSeparator({
       <AccordionPrimitive.Item value={session.id}>
         <div className="flex items-center gap-3 py-2">
           <div className="h-px flex-1 bg-lyra-border-subtle" />
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={onToggle}
             aria-expanded={open}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-lyra-border-subtle px-3 py-1.5 lyra-body-sm text-lyra-fg-secondary transition-colors hover:bg-lyra-state-hover"
+            className="shrink-0 rounded-full border border-lyra-border-subtle px-3 py-1.5 lyra-body-sm text-lyra-fg-secondary"
           >
+            <Tag label={session.status} variant={TRANSCRIPT_SESSION_STATUS_VARIANT[session.status] ?? "neutral"} />
             <span aria-hidden="true">#</span>
-            <span className="font-mono">{session.caseId}</span>
+            <span>{session.caseId}</span>
             <span aria-hidden="true">·</span>
             <span>{session.date}</span>
             {open ? (
@@ -2199,7 +2355,7 @@ function TranscriptSessionSeparator({
             ) : (
               <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
             )}
-          </button>
+          </Button>
           <div className="h-px flex-1 bg-lyra-border-subtle" />
         </div>
         <AccordionPrimitive.Content className="overflow-hidden data-[state=open]:animate-accordion-down data-[state=closed]:animate-accordion-up">
@@ -2249,6 +2405,13 @@ function InteractionTranscript() {
     }));
   };
 
+  const clearTags = (sessionId: string, messageId: string) => {
+    setSessionMessages((prev) => ({
+      ...prev,
+      [sessionId]: prev[sessionId].map((m) => (m.id === messageId ? { ...m, tags: [] } : m)),
+    }));
+  };
+
   const addTag = (sessionId: string, messageId: string, option: Omit<TranscriptTag, "id">) => {
     setSessionMessages((prev) => ({
       ...prev,
@@ -2269,32 +2432,121 @@ function InteractionTranscript() {
     navigator.clipboard?.writeText(text).catch(() => {});
   };
 
+  // Scroll to the latest message on open — every SMS/chat transcript should
+  // land on the newest message (bottom of the last session) rather than the
+  // very first one from potentially days ago. `useLayoutEffect` (not
+  // `useEffect`) so this happens before the browser paints the first frame
+  // — no visible flash of the top of the transcript before it jumps to the
+  // bottom. Empty deps: fires once when this transcript mounts (i.e. an
+  // interaction is opened), not on every re-render — adding a tag or
+  // toggling a session's details shouldn't yank an agent's scroll position
+  // back to the bottom while they're reading further up.
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = scrollContainerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  // Total message count across every session — the one number that tells us
+  // whether "new" messages have shown up since the agent last looked at the
+  // bottom of the transcript. Flattened rather than tracked per-session
+  // since the "N new" chip is a single count regardless of which session(s)
+  // the new messages landed in.
+  const totalMessageCount = useMemo(
+    () => Object.values(sessionMessages).reduce((sum, messages) => sum + messages.length, 0),
+    [sessionMessages]
+  );
+
+  // Whether the agent is currently scrolled to (near) the bottom — drives
+  // the floating "Scroll To Latest" affordance, which should only appear
+  // once they've scrolled up and away from the live edge of the
+  // conversation.
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const [newMessageCount, setNewMessageCount] = useState(0);
+  // How many total messages had arrived as of the last time the agent was
+  // at the bottom — a ref (not state) since it's only ever read inside
+  // effects/handlers, never rendered directly.
+  const lastSeenCountRef = useRef(totalMessageCount);
+
+  const BOTTOM_THRESHOLD_PX = 24;
+  const handleTranscriptScroll = () => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setIsAtBottom(distanceFromBottom < BOTTOM_THRESHOLD_PX);
+  };
+
+  // Keeps the "N new" count in sync with reality: while at the bottom,
+  // every message is by definition "seen," so the seen-count tracks the
+  // live total and the chip stays hidden; once the agent scrolls away, any
+  // further growth in the total is exactly how many they've missed.
+  useEffect(() => {
+    if (isAtBottom) {
+      lastSeenCountRef.current = totalMessageCount;
+      setNewMessageCount(0);
+    } else {
+      setNewMessageCount(Math.max(0, totalMessageCount - lastSeenCountRef.current));
+    }
+  }, [totalMessageCount, isAtBottom]);
+
+  const scrollToLatest = () => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    setIsAtBottom(true);
+  };
+
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="w-full max-w-[1200px] mx-auto px-6 py-4 lyra-transcript-wrap">
-        {TRANSCRIPT_SESSIONS.map((session) => (
-          <div key={session.id} className="flex flex-col">
-            <TranscriptSessionSeparator
-              session={session}
-              open={openSessionIds.has(session.id)}
-              onToggle={() => toggleSession(session.id)}
-            />
-            <div className="flex flex-col gap-5 py-4">
-              {sessionMessages[session.id].map((message) => (
-                <TranscriptMessageBubble
-                  key={message.id}
-                  message={message}
-                  tagPickerOpen={tagPickerOpenId === message.id}
-                  onTagPickerOpenChange={(open) => setTagPickerOpenId(open ? message.id : null)}
-                  onAddTag={(option) => addTag(session.id, message.id, option)}
-                  onRemoveTag={(tagId) => removeTag(session.id, message.id, tagId)}
-                  onCopy={() => copyMessage(message.text)}
-                />
-              ))}
+    <div className="relative flex-1 min-h-0">
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleTranscriptScroll}
+        className="h-full overflow-y-auto"
+      >
+        <div className="w-full max-w-[1200px] mx-auto px-6 py-4 lyra-transcript-wrap">
+          {TRANSCRIPT_SESSIONS.map((session) => (
+            <div key={session.id} className="flex flex-col">
+              <TranscriptSessionSeparator
+                session={session}
+                open={openSessionIds.has(session.id)}
+                onToggle={() => toggleSession(session.id)}
+              />
+              <div className="flex flex-col gap-5 py-4">
+                {sessionMessages[session.id].map((message) => (
+                  <TranscriptMessageBubble
+                    key={message.id}
+                    message={message}
+                    tagPickerOpen={tagPickerOpenId === message.id}
+                    onTagPickerOpenChange={(open) => setTagPickerOpenId(open ? message.id : null)}
+                    onAddTag={(option) => addTag(session.id, message.id, option)}
+                    onRemoveTag={(tagId) => removeTag(session.id, message.id, tagId)}
+                    onClearTags={() => clearTags(session.id, message.id)}
+                    onCopy={() => copyMessage(message.text)}
+                  />
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
+      {!isAtBottom && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center">
+          <Button
+            variant="outline"
+            size="lg"
+            onClick={scrollToLatest}
+            className="pointer-events-auto rounded-full bg-lyra-bg-surface-base text-lyra-fg-default shadow-lg"
+          >
+            <ArrowDown className="h-4 w-4" strokeWidth={1.5} aria-hidden="true" />
+            Scroll To Latest
+            {newMessageCount > 0 && (
+              <Badge color="slate" variant="solid">
+                {newMessageCount} New
+              </Badge>
+            )}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -2607,7 +2859,7 @@ function buildLatestInteraction(customerName: string | undefined, recordId: stri
 // showed "Interactions" active, but the panel should open on "Overview"
 // (index 0) by default — so `activeTab` below just starts at 0 rather than
 // looking up a specific tab's index.
-const CUSTOMER_PANEL_TABS = ["Overview", "Detail", "Directory", "Interactions", "Tasks", "Notes", "Accounts", "Tickets"];
+const CUSTOMER_PANEL_TABS = ["Overview", "History", "Detail", "Directory", "Interactions", "Tasks", "Notes", "Accounts", "Tickets"];
 
 /** Shared neutral bordered-container treatment for every collapsible
  *  `Accordion` in the Customer Information panel (Overview tab's "Customer
@@ -3172,6 +3424,21 @@ function CustomerInformationPanelBody({
           phoneDisplay={getFieldValue(fields, "Phone #")}
         />
       )}
+
+      {/* History — was going to be a channel-toggle pill in the interaction
+          record header (per the reference screenshot), moved here instead
+          per explicit follow-up request: a tab alongside Interactions/Tasks/
+          Notes/etc., not another entry in the ChannelToggle row. No real
+          content yet, same "blank placeholder" treatment the app-header
+          panel buttons (Conversations/Schedule/etc.) already use for a
+          not-yet-built body — just this tab's own copy ("Coming soon")
+          instead of theirs ("Nothing here yet"), so this in-progress tab
+          doesn't quietly read as caught-up-and-empty. */}
+      {activeTab === CUSTOMER_PANEL_TABS.indexOf("History") && (
+        <div className="flex flex-1 items-center justify-center p-4">
+          <p className="lyra-body-md text-lyra-fg-disabled text-center">Coming soon</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -3270,17 +3537,25 @@ function CustomerInformationInteriorPanel({
 
 type Page = "agent-workspace" | "agent" | "outbound" | "login";
 
-const AI_PANEL_DEFAULT_WIDTH = 360;
+// Shared default width for the single app-header panel (Search/Customers/
+// Accounts/Tickets/WEM/Screen Pop/Conversations/Schedule/Notifications) —
+// renamed from `AI_PANEL_DEFAULT_WIDTH` now that Ask AI (its original sole
+// occupant, back when each of these was its own independently-sized
+// `Draggable`) has been removed from this app.
+const SHARED_PANEL_DEFAULT_WIDTH = 360;
 
 // Screen Pop — external apps an agent can pop the current contact/record
 // into. Dummy list; wiring an actual screen-pop integration per app is out
 // of scope for now.
 const SCREEN_POP_APPS: SelectOption[] = [
-  { value: "salesforce", label: "Salesforce" },
-  { value: "zendesk",    label: "Zendesk" },
-  { value: "servicenow", label: "ServiceNow" },
-  { value: "hubspot",    label: "HubSpot" },
-  { value: "freshdesk",  label: "Freshdesk" },
+  { value: "salesforce",         label: "Salesforce" },
+  { value: "zendesk",            label: "Zendesk" },
+  { value: "servicenow",         label: "ServiceNow" },
+  { value: "hubspot",            label: "HubSpot" },
+  { value: "freshdesk",          label: "Freshdesk" },
+  { value: "script",             label: "Script" },
+  { value: "launch",             label: "Launch" },
+  { value: "custom-workspace",   label: "Custom Workspace" },
 ];
 
 export function AgentNextGenPage({
@@ -3313,7 +3588,11 @@ export function AgentNextGenPage({
    */
   sidePanelToggleLabel?: string;
 }) {
-  const [navOpen, setNavOpen] = useState(!!initialInteraction);
+  // Open by default on load (not gated on `initialInteraction` anymore —
+  // the rail should be open the first time this page renders regardless of
+  // whether the agent is seeded mid-call). `handleResize`'s narrow-viewport
+  // auto-collapse (a few lines down) still applies after that first paint.
+  const [navOpen, setNavOpen] = useState(true);
   // No interactions exist until the agent launches one from the CreateNew
   // menu (Start Interaction / quick dial) — see handleStartCall/handleQuick
   // Dial below. Click any resulting InteractionNavItem card to make it the
@@ -3322,6 +3601,12 @@ export function AgentNextGenPage({
   const [interactions, setInteractions] = useState<ActiveInteraction[]>(
     () => (initialInteraction ? [initialInteraction] : [])
   );
+  // Drives `AssignmentsSortButton`'s `RadioGroup` — "Last Updated" (default,
+  // matching a typical inbox's own default order) or "Start Date". Actual
+  // ordering happens where the cards render (`sortAssignments`), leaving
+  // `interactions` itself in insertion order for everything else that reads
+  // it (`activeInteraction`, dismiss/redial handlers, etc.).
+  const [assignmentSort, setAssignmentSort] = useState<AssignmentSortValue>("lastUpdated");
   const [activeInteractionId, setActiveInteractionId] = useState<string | null>(
     () => initialInteraction?.id ?? null
   );
@@ -3397,15 +3682,27 @@ export function AgentNextGenPage({
      "only one may be docked" rule trivially true (there's only ever one
      container to dock) instead of something to actively enforce.
 
-     Ask AI's and Notifications' actual content (previously only reachable
-     via the standalone `AiPanel`/`AgentNotifications` components, each of
-     which bakes its own header AND its own `Draggable` wrapper together)
-     now comes from `useAiPanelContent`/`useAgentNotificationsContent`
-     (lyra-ui) — the same two hooks those components call internally, so
-     this is a second CALLER of that content, not a second, drifting copy
-     of it. See lyra-ui's own "Single Container - Real Content" Storybook
-     demo (`Draggable.stories.tsx`) for this exact pattern in isolation. */
-  type PanelKey = "ai" | "notif" | "conversations" | "schedule" | "screenpop";
+     Notifications' actual content (previously only reachable via the
+     standalone `AgentNotifications` component, which bakes its own header
+     AND its own `Draggable` wrapper together) now comes from
+     `useAgentNotificationsContent` (lyra-ui) — the same hook that
+     component calls internally, so this is a second CALLER of that
+     content, not a second, drifting copy of it. See lyra-ui's own "Single
+     Container - Real Content" Storybook demo (`Draggable.stories.tsx`) for
+     this exact pattern in isolation (that demo also includes Ask AI's
+     content via `useAiPanelContent` — dropped from this app per request,
+     but left in the shared demo since it's still a real, valid caller of
+     that hook). */
+  type PanelKey =
+    | "notif"
+    | "conversations"
+    | "schedule"
+    | "screenpop"
+    | "customers"
+    | "accounts"
+    | "tickets"
+    | "wem"
+    | "search";
 
   const [panelOpen,      setPanelOpen]      = useState(false);
   const [panelMounted,   setPanelMounted]   = useState(false);
@@ -3420,7 +3717,7 @@ export function AgentNextGenPage({
   // switching which button is active while already open leaves whatever
   // variant it was already in alone).
   const [panelVariant,    setPanelVariant]    = useState<DraggableVariant>("docked");
-  const [panelWidth,      setPanelWidth]      = useState(AI_PANEL_DEFAULT_WIDTH);
+  const [panelWidth,      setPanelWidth]      = useState(SHARED_PANEL_DEFAULT_WIDTH);
   const [panelHeight,     setPanelHeight]     = useState(860);
   const [panelIsResizing, setPanelIsResizing] = useState(false);
   const containerRef  = useRef<HTMLDivElement>(null);
@@ -3429,6 +3726,39 @@ export function AgentNextGenPage({
   const panelRef       = useRef<HTMLDivElement>(null);
   const panelAnimTimer = useRef<ReturnType<typeof setTimeout>>();
   const [screenPopApp, setScreenPopApp] = useState("");
+  // Search panel's own query — separate from `searchQuery` (contact
+  // history search elsewhere in this file) since this is a distinct,
+  // unrelated search surface that happens to share the same app-header
+  // panel shell.
+  const [globalSearchQuery, setGlobalSearchQuery] = useState("");
+
+  // "View All Apps" kebab menu — lists every app-header panel button
+  // regardless of pinned state, with a `PanelPinButton` per row so any app
+  // can be pinned/unpinned right from the menu. All nine start pinned
+  // (matching today's always-visible header row); unpinning one just hides
+  // its persistent header icon — the app's still reachable by clicking its
+  // row in this menu, which opens the shared panel exactly like the header
+  // icon would.
+  // Default pinned set — header shows (right to left) Notifications,
+  // Schedule, Conversations, Customers, Search; Accounts/Tickets/WEM/Screen
+  // Pop start unpinned (reachable only via "View All Apps" until the user
+  // pins them). `PANEL_KEY_INITIAL_ORDER` below already places these five
+  // in that exact left-to-right sequence (search < customers <
+  // conversations < schedule < notif), so pinning just these five is
+  // enough — no extra reordering needed to match "right to left: notif,
+  // schedule, conversations, customers, search".
+  const [pinnedKeys, setPinnedKeys] = useState<Record<PanelKey, boolean>>({
+    notif: true,
+    conversations: true,
+    schedule: true,
+    screenpop: false,
+    customers: true,
+    accounts: false,
+    tickets: false,
+    wem: false,
+    search: true,
+  });
+  const [appsMenuOpen, setAppsMenuOpen] = useState(false);
 
   /* Interior panel (right) */
   const [interiorPanelOpen, setInteriorPanelOpen] = useState(false);
@@ -3927,31 +4257,75 @@ export function AgentNextGenPage({
     const top = panelFloatTop.current !== null
       ? panelFloatTop.current
       : (rect?.top ?? 0);
-    return { position: "fixed", top, left, zIndex: 10000 };
+    // Below the app-header menus' own `z-[9999]` (the "View All Apps" kebab
+    // dropdown, menu-radix.tsx; the app-switcher popover a few hundred
+    // lines up) — this used to be `10000`, one higher, so a floated panel
+    // rendered ON TOP of either menu instead of under it (confirmed via
+    // screenshot: the Customers panel covering the open kebab dropdown).
+    // Still comfortably above the rest of the page's own z-index tiers
+    // (AppHeader/Draggable's internal chrome top out around `z-20`).
+    return { position: "fixed", top, left, zIndex: 40 };
   };
 
-  // ── Content for each of the five buttons ──
-  // Ask AI's and Notifications' real content — same `useAiPanelContent`/
-  // `useAgentNotificationsContent` hooks `AiPanel`/`AgentNotifications`
-  // call internally (ai-panel.tsx/agent-notifications.tsx in lyra-ui) — so
-  // this app gets their actual bodies, not a reimplemented copy. Called
-  // unconditionally every render (Rules of Hooks) regardless of whether
-  // that content is the one currently showing.
-  const aiContent = useAiPanelContent({
-    userName: "John",
-    suggestions: [
-      { id: "1", label: "Summarise this contact's history" },
-      { id: "2", label: "Suggest a response to the customer" },
-      { id: "3", label: "What changed since yesterday?" },
-    ],
-  });
+  // ── Content for each button ──
+  /* "New Assignment" notification click — opens (or re-focuses) a real
+     assignment card in the LeftNav, same merge-by-id + "expand the nav,
+     open the Customer Information panel" pattern `handleQuickDial`/
+     `handleRedial` already use, just keyed off the notification itself
+     (namespaced "notif:" so it can't collide with an Outbound-picker
+     contact id, a quick-dialed number, or a Contact History redial) rather
+     than a phone number or picked contact. No stored channel type on
+     `AgentNotification` to key off of — defaults to "email", the closest
+     read of "a new case came in" among the channel types this prototype
+     actually models (voice/chat implies an already-live conversation; a
+     case is closer to something that arrived asynchronously). */
+  const handleOpenAssignmentFromNotification = (notification: AgentNotification) => {
+    const id = `notif:${notification.id}`;
+    const newChannel: TrackedChannel = {
+      id: "email",
+      type: "email",
+      startTick: clockTick,
+      interactionId: generateInteractionId(),
+    };
+    setInteractions((prev) => {
+      const idx = prev.findIndex((i) => i.id === id);
+      if (idx === -1) {
+        return [...prev, {
+          id,
+          customerName: notification.subtitle,
+          recordId: generateCaseId(),
+          channels: [newChannel],
+          currentChannelId: newChannel.id,
+        }];
+      }
+      return prev.map((interaction, i) =>
+        i === idx ? { ...interaction, channels: [newChannel], currentChannelId: newChannel.id } : interaction
+      );
+    });
+    setActiveInteractionId(id);
+    setNavOpen(true);
+    setCustomerPanelOpen(true);
+    setNotifications((prev) => prev.map((n) => (n.id === notification.id ? { ...n, read: true } : n)));
+  };
+
+  // Notifications' real content — same `useAgentNotificationsContent`
+  // hook `AgentNotifications` calls internally (agent-notifications.tsx
+  // in lyra-ui) — so this app gets its actual body, not a reimplemented
+  // copy. Called unconditionally every render (Rules of Hooks) regardless
+  // of whether that content is the one currently showing.
   const notifContent = useAgentNotificationsContent({
     notifications,
     onMarkAllRead: () => setNotifications((prev) => prev.map((n) => ({ ...n, read: true }))),
     onClearAll: () => setNotifications([]),
     onDismiss: (id: string) => setNotifications((prev) => prev.filter((n) => n.id !== id)),
+    // Only "New Assignment" (`type: "new-case"`) notifications open a real
+    // assignment — the rest (New Chat/Escalation/Missed Call) keep the
+    // original "just mark it read" behavior, since they don't represent an
+    // assignment this app actually models opening.
     onNotificationClick: (n: AgentNotification) =>
-      setNotifications((prev) => prev.map((i) => i.id === n.id ? { ...i, read: true } : i)),
+      n.type === "new-case"
+        ? handleOpenAssignmentFromNotification(n)
+        : setNotifications((prev) => prev.map((i) => i.id === n.id ? { ...i, read: true } : i)),
   });
   // Conversations/Schedule — no bespoke component (same blank empty-state
   // `DraggablePanel` itself defaults to when given no children).
@@ -3984,12 +4358,38 @@ export function AgentNextGenPage({
       </div>
     ),
   };
+  // Search — same blank body as Conversations/Schedule, plus a
+  // `SearchInput` in `headerContent` (same "fixed above the divider"
+  // treatment Screen Pop's app-select uses above) rather than a body
+  // form field, so the query box stays put as results (once there's a
+  // real data source) would scroll below it.
+  const searchContent: EmbeddablePanelContent = {
+    title: "Search",
+    headerContent: (
+      <SearchInput
+        value={globalSearchQuery}
+        onValueChange={setGlobalSearchQuery}
+        placeholder="Search..."
+        size="sm"
+      />
+    ),
+    body: (
+      <div className="overflow-y-auto flex-1 flex items-center justify-center p-4">
+        <p className="lyra-body-md text-lyra-fg-disabled text-center">Nothing here yet.</p>
+      </div>
+    ),
+  };
   const contentByPanelKey: Record<PanelKey, EmbeddablePanelContent> = {
-    ai: aiContent,
     notif: notifContent,
     conversations: blankPanelContent("Conversations"),
     schedule: blankPanelContent("Schedule"),
     screenpop: screenPopContent,
+    customers: blankPanelContent("Customers"),
+    accounts: blankPanelContent("Accounts"),
+    tickets: blankPanelContent("Tickets"),
+    // WEM = Workforce Engagement Management
+    wem: blankPanelContent("WEM"),
+    search: searchContent,
   };
   const activePanelContent = activePanelKey ? contentByPanelKey[activePanelKey] : null;
 
@@ -4010,6 +4410,225 @@ export function AgentNextGenPage({
     }
     setActivePanelKey(key);
   };
+
+  // "Selected" treatment for whichever AppHeader icon button currently owns
+  // the shared panel — same `bg-lyra-bg-active-moderate`/`text-lyra-fg-
+  // active-strong` "active" idiom `PanelPinButton`/`LeftNav`/`Tabs` already
+  // use elsewhere in the design system (also now `NotificationsBell`'s own
+  // open state, notifications-bell.tsx), not a plain hover tint. Matches
+  // lyra-ui's own "Multiple Containers" Storybook demos (`Draggable.
+  // stories.tsx`), which use this exact class for the same purpose.
+  const PANEL_BUTTON_SELECTED_CLASS = "bg-lyra-bg-active-moderate text-lyra-fg-active-strong hover:bg-lyra-bg-active-moderate";
+
+  // Per-key label/icon used to build the "View All Apps" menu rows below —
+  // same labels/icons as the header buttons' own `title`/child-icon pairs
+  // above, just centralized so the menu doesn't hand-duplicate them.
+  // "notif" uses `Bell` here (a plain menu row), unlike the header itself,
+  // which keeps using the specialized `NotificationsBell` component (badge
+  // count, its own portal, etc.) for that one button.
+  const PANEL_KEY_METADATA: Record<PanelKey, { label: string; icon: LucideIcon }> = {
+    notif: { label: "Notifications", icon: Bell },
+    conversations: { label: "Conversations", icon: MessageSquare },
+    schedule: { label: "Schedule", icon: CalendarDays },
+    screenpop: { label: "Screen Pop", icon: MonitorUp },
+    customers: { label: "Customers", icon: Users },
+    accounts: { label: "Accounts", icon: Building2 },
+    tickets: { label: "Tickets", icon: Ticket },
+    wem: { label: "WEM", icon: Gauge },
+    search: { label: "Search", icon: Search },
+  };
+  const PANEL_KEY_INITIAL_ORDER: PanelKey[] = [
+    "search", "customers", "accounts", "tickets", "wem",
+    "screenpop", "conversations", "schedule", "notif",
+  ];
+  // Live, user-reorderable order for both the header icon row AND the "View
+  // All Apps" menu — ONE shared hook instance/state so dragging either
+  // surface updates the exact same array the other one reads, rather than
+  // two independently-drifting copies. `useColumnReorder` (lyra-ui,
+  // table.tsx) already implements exactly this — a generic `K extends
+  // string`-keyed array plus native HTML5 drag handlers — for
+  // `SortableTableHead`'s column reordering; reused as-is here rather than
+  // hand-rolling a second copy of the same splice/dataTransfer logic.
+  const {
+    columnOrder: panelOrder,
+    dragOverKey: panelDragOverKey,
+    dragHandlers: panelDragHandlers,
+  } = useColumnReorder<PanelKey>(PANEL_KEY_INITIAL_ORDER);
+  // Each row: clicking it opens that app in the shared panel (same handler
+  // the header icon uses) and closes the menu; the trailing `PanelPinButton`
+  // toggles `pinnedKeys` without triggering that — Radix closes the menu on
+  // any click inside an item by default, so the pin button's own click is
+  // wrapped in a `stopPropagation` span to both keep the menu open and avoid
+  // also firing the row's `onClick` (which would open that app's panel too).
+  // `draggable`/`onDragStart`/etc. wire this row into the exact same
+  // `panelDragHandlers` the header icon buttons below use — dragging a row
+  // here to reorder it moves the same underlying `panelOrder` array the
+  // header reads, and vice versa.
+  const appsMenuItems: MenuEntry[] = panelOrder.map((key) => {
+    const { label, icon: KeyIcon } = PANEL_KEY_METADATA[key];
+    return {
+      id: key,
+      label,
+      icon: <KeyIcon className="h-4 w-4" strokeWidth={1.5} />,
+      // Mirrors the header icon buttons' own `PANEL_BUTTON_SELECTED_CLASS`
+      // condition — whichever app currently owns the shared panel gets the
+      // same blue "active" row treatment here (MenuRadixItem's `item.active`
+      // branch) that its header icon gets.
+      active: panelOpen && activePanelKey === key,
+      onClick: handlePanelButtonClick(key),
+      // Selecting an app should just switch the shared panel to it, the
+      // same way clicking its header icon would — not also close this
+      // menu, since a caller might want to pin/unpin or jump between
+      // several apps in one pass without it snapping shut after the first.
+      closeOnSelect: false,
+      draggable: true,
+      dragOver: panelDragOverKey === key,
+      onDragStart: (e) => panelDragHandlers.onDragStart(e, key),
+      onDragOver: (e) => panelDragHandlers.onDragOver(e, key),
+      onDrop: (e) => panelDragHandlers.onDrop(e, key),
+      onDragEnd: panelDragHandlers.onDragEnd,
+      onDragLeave: panelDragHandlers.onDragLeave,
+      rightElement: (
+        <span className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+          {/* Same unread count `NotificationsBell`'s own header icon shows
+              (`notifications.filter((n) => !n.read).length`) — reused here,
+              not recomputed with different criteria, so this row can't tell
+              a different story than the icon it's a menu-row stand-in for.
+              `Badge`'s own `shape="circle"`/`variant="critical"`/`size="sm"`
+              is the exact styling `Button`'s built-in `badge` prop already
+              uses for this same count elsewhere (button.tsx) — reused
+              directly since a `Menu` row's `rightElement` isn't an
+              icon-shaped `Button`/`ActionIconButton` itself, so that prop
+              isn't available here the way it is on the header icon. */}
+          {key === "notif" && notifications.filter((n) => !n.read).length > 0 && (
+            <Badge shape="circle" variant="critical" size="sm" count={notifications.filter((n) => !n.read).length} />
+          )}
+          <PanelPinButton
+            pinned={pinnedKeys[key]}
+            onToggle={() => setPinnedKeys((prev) => ({ ...prev, [key]: !prev[key] }))}
+            // Notifications must always stay pinned — see `disabled` below
+            // — so its tooltip explains why rather than offering an
+            // "Unpin" action this instance won't actually perform.
+            pinnedLabel={key === "notif" ? "Notifications can't be unpinned" : `Unpin ${label}`}
+            unpinnedLabel={`Pin ${label}`}
+            // Notifications is the one app that should never be reachable
+            // ONLY through "View All Apps" — always pinned, un-toggleable.
+            // `disabled` (not just leaving `onToggle` a no-op) also blocks
+            // keyboard/screen-reader activation, and skipping the `className`
+            // override below (next comment) lets `PanelPinButton`'s own
+            // disabled-state styling show through instead of being
+            // clobbered by the pinned-row override.
+            disabled={key === "notif"}
+            // Only override the icon/className when PINNED (and not the
+            // disabled Notifications row) — unpinned rows pass neither
+            // prop, so they fall straight through to `PanelPinButton`'s own
+            // untouched default rendering (plain gray outline Pin, no
+            // rotation since `pinned` is false), exact same as before this
+            // change. Pinned rows get a custom solid blue pin
+            // (`fill-lyra-fg-active-strong` + matching `text-*`, same
+            // "filled + colored icon" idiom `FavoriteButton`'s star already
+            // uses) instead of the default's plain 45°-rotated outline Pin.
+            // Passing a custom `icon` also opts this into `PanelPinButton`'s
+            // "selected button background" treatment — not wanted here,
+            // just the icon itself should read as filled/blue — so
+            // `className` overrides that back to transparent (twMerge drops
+            // the conflicting `bg-*`), also only when pinned. Excluded for
+            // the disabled Notifications row too — its hardcoded blue
+            // `text-*`/`fill-*` wouldn't respect `PanelPinButton`'s own
+            // `disabled:text-lyra-fg-disabled`, so it falls through to the
+            // default Pin glyph instead, which (via lucide's `currentColor`
+            // stroke/fill) properly inherits that muted disabled color.
+            icon={
+              pinnedKeys[key] && key !== "notif" ? (
+                <Pin className="h-4 w-4 rotate-45 fill-lyra-fg-active-strong text-lyra-fg-active-strong" strokeWidth={1.5} />
+              ) : undefined
+            }
+            className={pinnedKeys[key] && key !== "notif" ? "bg-transparent hover:bg-lyra-state-hover" : undefined}
+          />
+        </span>
+      ),
+    };
+  });
+
+  // ── Responsive header icon collapse ──
+  // As the viewport narrows, the pinned icon-button row can eventually run
+  // out of room and squish/wrap `AppName` ("Agent Next Gen") instead — so
+  // rather than letting that happen, buttons drop out of the header one at
+  // a time, always starting with the FARTHEST LEFT pinned one in the
+  // *current* (user-reorderable) `panelOrder` — since that's the icon
+  // nearest `AppName` and the first to collide with it as space runs out,
+  // dragging a button further right also moves it further down the "gets
+  // hidden first" list. A dropped button isn't gone — same as unpinning it,
+  // it just stops rendering in the header and stays reachable via "View All
+  // Apps" (`appsMenuItems` above lists every key regardless of pinned/
+  // responsively-hidden state).
+  //
+  // This used to be a table of fixed viewport-width breakpoints, which
+  // hid icons well before they actually needed the room (lots of dead space
+  // between `AppName` and the icons at widths that were already hiding
+  // several of them) and didn't account for anything BUT window width
+  // (e.g. a wider/narrower `AppName` — it hardcodes "Agent Next Gen" today,
+  // but AppMenu/AppName are generic). Replaced with real geometry: measure
+  // the actual gap between `AppName`'s rendered right edge
+  // (`appNameMeasureRef`) and the visible icon row's rendered left edge
+  // (`headerIconsMeasureRef`) after every layout, and only hide/reveal a
+  // icon when that gap actually crosses a threshold — i.e. when they're
+  // genuinely about to collide, not on a width guess. A small hysteresis
+  // gap (`SHOW_GAP_PX` well above `HIDE_GAP_PX`) keeps this from
+  // flapping — hiding an icon frees up roughly one icon's width of gap,
+  // which would otherwise immediately clear the "show one back" threshold
+  // and re-show it next frame.
+  const pinnedKeysInHeaderOrder = panelOrder.filter((key) => pinnedKeys[key]);
+  const appHeaderRef = useRef<HTMLElement>(null);
+  const appNameMeasureRef = useRef<HTMLDivElement>(null);
+  const headerIconsMeasureRef = useRef<HTMLDivElement>(null);
+  const [autoHiddenCount, setAutoHiddenCount] = useState(0);
+  useLayoutEffect(() => {
+    const HIDE_GAP_PX = 16; // start hiding once closer than this
+    const SHOW_GAP_PX = 84; // ~44px icon + gap, plus headroom above HIDE_GAP_PX so it doesn't immediately re-show what was just hidden
+    const measure = () => {
+      const appNameEl = appNameMeasureRef.current;
+      const iconsEl = headerIconsMeasureRef.current;
+      if (!appNameEl || !iconsEl) return;
+      const gap = iconsEl.getBoundingClientRect().left - appNameEl.getBoundingClientRect().right;
+      setAutoHiddenCount((prev) => {
+        if (gap < HIDE_GAP_PX && prev < pinnedKeysInHeaderOrder.length) return prev + 1;
+        if (gap > SHOW_GAP_PX && prev > 0) return prev - 1;
+        return prev;
+      });
+    };
+    measure();
+    // Widening the window back out doesn't necessarily change either
+    // measured element's OWN size — once `AppName` is back to its natural
+    // width and the hidden icons are gone, both boxes can sit still while
+    // `justify-between` just grows the empty space between them, so a
+    // ResizeObserver on only those two elements can miss the "there's now
+    // room again" case entirely (this was the bug: icons stayed hidden
+    // after growing the window back, even once the gap ,`prev` never
+    // re-evaluated because nothing observed had actually changed size). The
+    // header's OWN box, and the window itself, reliably do change size on
+    // every resize regardless of whether `AppName`/the icon row happen to
+    // — observing/listening to those too guarantees at least one
+    // `measure()` call per resize either way.
+    const ro = new ResizeObserver(measure);
+    if (appHeaderRef.current) ro.observe(appHeaderRef.current);
+    if (appNameMeasureRef.current) ro.observe(appNameMeasureRef.current);
+    if (headerIconsMeasureRef.current) ro.observe(headerIconsMeasureRef.current);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+    // Re-measure whenever the pinned set changes (pinning/unpinning shifts
+    // how many icons COULD show) and every time `autoHiddenCount` itself
+    // changes — each change nudges the count by exactly one and re-runs
+    // this effect, converging step by step rather than jumping straight to
+    // a final value in one pass.
+  }, [pinnedKeysInHeaderOrder.length, autoHiddenCount]);
+  const responsivelyHiddenKeys = new Set(
+    pinnedKeysInHeaderOrder.slice(0, Math.min(autoHiddenCount, pinnedKeysInHeaderOrder.length))
+  );
+  const showHeaderIcon = (key: PanelKey) => pinnedKeys[key] && !responsivelyHiddenKeys.has(key);
 
   // The one shared `Draggable` — its header (icon/actions/title) and body
   // swap to whichever button's content is active; the container itself
@@ -4045,12 +4664,13 @@ export function AgentNextGenPage({
               <>
                 {activePanelContent.headerActions}
                 <Tooltip content={dockButtonProps["aria-label"]} placement="bottom" asLabel>
-                  <button
+                  <ActionIconButton
                     {...dockButtonProps}
-                    className="flex h-8 w-8 items-center justify-center rounded-lyra-sm text-lyra-fg-secondary hover:bg-lyra-state-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lyra-border-focus"
+                    size="sm"
+                    className="text-lyra-fg-secondary hover:text-lyra-fg-secondary"
                   >
                     {dockIcon}
-                  </button>
+                  </ActionIconButton>
                 </Tooltip>
               </>
             }
@@ -4073,110 +4693,191 @@ export function AgentNextGenPage({
 
       {/* ── App Header ── */}
       <AppHeader
+        ref={appHeaderRef}
         appName={
-          <PopoverPrimitive.Root open={appMenuOpen} onOpenChange={setAppMenuOpen}>
-            <PopoverPrimitive.Trigger asChild>
-              <AppName
-                icon={<img src={appIcon} alt="Agent Next Gen" className="h-6 w-6" />}
-                name="Agent Next Gen"
-                compact={isCompactHeader}
-                aria-expanded={appMenuOpen}
-              />
-            </PopoverPrimitive.Trigger>
-            <PopoverPrimitive.Portal>
-              <PopoverPrimitive.Content
-                side="bottom"
-                align="start"
-                sideOffset={6}
-                onOpenAutoFocus={(e: Event) => e.preventDefault()}
-                className="z-[9999] animate-in fade-in-0 slide-in-from-top-2 duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-1 data-[state=closed]:duration-100"
-              >
-                <AppMenu
-                  groups={appMenuGroups}
-                  footer={<CXoneLogo />}
-                  header={isCompactHeader ? "Agent Next Gen" : undefined}
+          // `appNameMeasureRef` — see "Responsive header icon collapse"
+          // above — reads this wrapper's rendered right edge every layout
+          // to decide whether the icon row on the other side of the header
+          // is crowding it, so icons only hide once there's a real
+          // overlap risk instead of a fixed viewport-width guess.
+          <div ref={appNameMeasureRef} className="flex items-center">
+            <PopoverPrimitive.Root open={appMenuOpen} onOpenChange={setAppMenuOpen}>
+              <PopoverPrimitive.Trigger asChild>
+                <AppName
+                  icon={<img src={appIcon} alt="Agent Next Gen" className="h-6 w-6" />}
+                  name="Agent Next Gen"
+                  compact={isCompactHeader}
+                  aria-expanded={appMenuOpen}
                 />
-              </PopoverPrimitive.Content>
-            </PopoverPrimitive.Portal>
-          </PopoverPrimitive.Root>
+              </PopoverPrimitive.Trigger>
+              <PopoverPrimitive.Portal>
+                <PopoverPrimitive.Content
+                  side="bottom"
+                  align="start"
+                  sideOffset={6}
+                  onOpenAutoFocus={(e: Event) => e.preventDefault()}
+                  className="z-[9999] animate-in fade-in-0 slide-in-from-top-2 duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-1 data-[state=closed]:duration-100"
+                >
+                  <AppMenu
+                    groups={appMenuGroups}
+                    footer={<CXoneLogo />}
+                    header={isCompactHeader ? "Agent Next Gen" : undefined}
+                  />
+                </PopoverPrimitive.Content>
+              </PopoverPrimitive.Portal>
+            </PopoverPrimitive.Root>
+          </div>
         }
         actions={
           <>
-            {/* Screen Pop / Conversations / Schedule / Notifications / Ask AI
-                — all five now go through lyra-ui's `ActionIconButton`
-                (`size="xl"`, 44px), the single canonical AppHeader
-                icon-button shape. These used to be hand-rolled
-                `<button>`s (`h-10 w-10 rounded-lyra-lg`) matching
-                `NotificationsBell`'s own trigger, which at the time was
-                also hand-rolled rather than built on `ActionIconButton` —
-                lyra-ui has since consolidated `NotificationsBell` and
-                `ActionIconButton` onto one shared implementation (composing
-                `Button` internally), with 44px/`rounded-lyra-sm` as the
-                confirmed canonical AppHeader size, so this row now matches
-                `Header.tsx`'s (and lyra-ui's own `AppHeader.stories.tsx`)
-                icon buttons instead of diverging from them. Labeled
-                "Conversations" (renamed from "Messages" — same
-                trigger/panel, just the label). Screen Pop sits to the left
-                of Conversations, using lucide's `MonitorUp` (monitor + up
-                arrow) to match the requested icon exactly. */}
-            <ActionIconButton
-              size="xl"
-              title="Screen Pop"
-              aria-expanded={panelOpen && activePanelKey === "screenpop"}
-              onClick={handlePanelButtonClick("screenpop")}
-              className={panelOpen && activePanelKey === "screenpop" ? "bg-lyra-state-hover" : undefined}
-            >
-              <MonitorUp className="h-5 w-5" strokeWidth={1.5} />
-            </ActionIconButton>
-            <ActionIconButton
-              size="xl"
-              title="Conversations"
-              aria-expanded={panelOpen && activePanelKey === "conversations"}
-              onClick={handlePanelButtonClick("conversations")}
-              className={panelOpen && activePanelKey === "conversations" ? "bg-lyra-state-hover" : undefined}
-            >
-              <MessageSquare className="h-5 w-5" strokeWidth={1.5} />
-            </ActionIconButton>
-            <ActionIconButton
-              size="xl"
-              title="Schedule"
-              aria-expanded={panelOpen && activePanelKey === "schedule"}
-              onClick={handlePanelButtonClick("schedule")}
-              className={panelOpen && activePanelKey === "schedule" ? "bg-lyra-state-hover" : undefined}
-            >
-              <CalendarDays className="h-5 w-5" strokeWidth={1.5} />
-            </ActionIconButton>
-            <NotificationsBell
-              notifications={notifications}
-              open={panelOpen && activePanelKey === "notif"}
-              onOpenChange={() => handlePanelButtonClick("notif")()}
-              renderPanel={false}
-            />
-            {/* Sole "Ask AI" entry point — the PageHeader labeled button
-                (Desk dashboard and the record-page header) was removed so
-                this AppHeader icon is the only trigger for the shared
-                panel's Ask AI content now. Renders lyra-ui's exported
-                `AiSparkleIcon` — the same solid-color sparkle mark
-                `AgentNextGenTemplate.stories.tsx` and `lyra-ux-templates`'
-                `AgentNextGenPage.tsx` both use here — via `ActionIconButton`
-                (44px, matching every other icon button in this row now). */}
-            <ActionIconButton
-              size="xl"
-              title="Ask AI"
-              aria-expanded={panelOpen && activePanelKey === "ai"}
-              onClick={handlePanelButtonClick("ai")}
-              className={panelOpen && activePanelKey === "ai" ? "bg-lyra-state-hover" : undefined}
-            >
-              <AiSparkleIcon />
-            </ActionIconButton>
-            {/* Separator between the icon-button row (Screen Pop through Ask
-                AI) and AgentProfile — `orientation="vertical"` + `h-auto
-                self-stretch` is the same sizing lyra-ui's own vertical
-                Separator usage uses (see `dashboard-card.tsx`'s metric-row
+            {/* Search / Customers / Accounts / Tickets / WEM / Screen Pop /
+                Conversations / Schedule / Notifications / Ask AI — all ten
+                now go through lyra-ui's `ActionIconButton` (`size="xl"`,
+                44px), the single canonical AppHeader icon-button shape.
+                These used to be hand-rolled `<button>`s (`h-10 w-10
+                rounded-lyra-lg`) matching `NotificationsBell`'s own
+                trigger, which at the time was also hand-rolled rather than
+                built on `ActionIconButton` — lyra-ui has since consolidated
+                `NotificationsBell` and `ActionIconButton` onto one shared
+                implementation (composing `Button` internally), with
+                44px/`rounded-lyra-sm` as the confirmed canonical AppHeader
+                size, so this row now matches `Header.tsx`'s (and lyra-ui's
+                own `AppHeader.stories.tsx`) icon buttons instead of
+                diverging from them. Labeled "Conversations" (renamed from
+                "Messages" — same trigger/panel, just the label). Screen Pop
+                sits to the left of Conversations, using lucide's
+                `MonitorUp` (monitor + up arrow) to match the requested icon
+                exactly.
+
+                Search/Customers/Accounts/Tickets/WEM all share the exact
+                same single-container panel every other button here does
+                (see `handlePanelButtonClick`/`contentByPanelKey` above) —
+                each just shows its own blank placeholder body (Search gets
+                a `SearchInput` in `headerContent` too, same "fixed above
+                the divider" treatment Screen Pop's app-select uses), no
+                bespoke content yet since none of the five has a real data
+                source in this prototype. WEM = Workforce Engagement
+                Management — `Gauge` (already used elsewhere on the Desk
+                dashboard for a performance metric) reused here since it's
+                the closest existing icon to "workforce performance/
+                engagement" rather than importing a near-duplicate.
+
+                Trailing "View All Apps" kebab (after Notifications, before
+                the AgentProfile divider) lists all nine of these (via
+                `appsMenuItems`, built above from `PANEL_KEY_METADATA`) with
+                a pin toggle per row — unpinning one wraps its button above
+                in `{showHeaderIcon("KEY") && ...}` (`pinnedKeys[key] &&
+                !responsivelyHiddenKeys.has(key)`, see the "Responsive
+                header icon collapse" block above), hiding the persistent
+                header icon while leaving the app reachable from this menu
+                (its `onClick` is the same `handlePanelButtonClick` the
+                header icon itself uses). That same `showHeaderIcon` check
+                is also what auto-hides pinned buttons left-to-right as the
+                viewport narrows, so a small screen doesn't squish
+                `AppName`. `KebabMenuButton` (not the hand-rolled
+                `Menu`) because its rows render as Radix `<div
+                role="menuitem">`s rather than `<button>`s — required here
+                since each row nests a real `<button>` (`PanelPinButton`) in
+                `rightElement`, which would be invalid HTML nested inside
+                another button. Wrapped in `Tooltip`+`span` because
+                `KebabMenuButton` doesn't spread arbitrary props onto its
+                inner trigger, so `Tooltip`'s `asChild` cloning needs that
+                intermediate span to attach its hover handlers (same fix
+                already used for the "More options" overflow menu in
+                lyra-ui's own agent-notifications.tsx). Sized up from its
+                24px default to the 44px `ActionIconButton` standard via
+                `className` (twMerge dedupes the conflicting h-6/w-6). Uses
+                `align="right"` (its default) here since it now sits at the
+                right end of the row, matching every other right-aligned
+                overflow kebab in this file. */}
+            {/* Search through Notifications used to be nine near-identical
+                hand-written blocks (one per key); collapsed into a single
+                `.map()` over the live, reorderable `panelOrder` (filtered to
+                whichever are currently pinned-and-visible via
+                `showHeaderIcon`) so drag-to-reorder only has to be wired up
+                once. Each icon is wrapped in a plain draggable `<div>`
+                rather than teaching `ActionIconButton`/`NotificationsBell`
+                themselves about native HTML5 drag — same
+                `panelDragHandlers`/`panelDragOverKey` the "View All Apps"
+                menu rows below use, so dragging an icon here to reorder it
+                moves the very same `panelOrder` array those rows read (and
+                a drag in the menu reorders the header right back), rather
+                than two independently-drifting orders. "notif" still
+                renders the specialized `NotificationsBell` (badge count,
+                its own `open`/`onOpenChange`) instead of a generic
+                `ActionIconButton` — everything else comes straight out of
+                `PANEL_KEY_METADATA`. `headerIconsMeasureRef` wraps just
+                this visible row (not the kebab/separator/profile after it)
+                — its rendered LEFT edge is the other half of the "Responsive
+                header icon collapse" gap measurement above, alongside
+                `appNameMeasureRef`. */}
+            <div ref={headerIconsMeasureRef} className="flex items-center gap-1">
+              {panelOrder.filter(showHeaderIcon).map((key) => {
+                const { label, icon: KeyIcon } = PANEL_KEY_METADATA[key];
+                const isActive = panelOpen && activePanelKey === key;
+                return (
+                  <div
+                    key={key}
+                    draggable
+                    onDragStart={(e) => panelDragHandlers.onDragStart(e, key)}
+                    onDragOver={(e) => panelDragHandlers.onDragOver(e, key)}
+                    onDrop={(e) => panelDragHandlers.onDrop(e, key)}
+                    onDragEnd={panelDragHandlers.onDragEnd}
+                    onDragLeave={panelDragHandlers.onDragLeave}
+                    className={cn(
+                      "rounded-lyra-sm cursor-grab active:cursor-grabbing transition-colors",
+                      panelDragOverKey === key && "bg-lyra-bg-active-moderate"
+                    )}
+                  >
+                    {key === "notif" ? (
+                      <NotificationsBell
+                        notifications={notifications}
+                        open={isActive}
+                        onOpenChange={() => handlePanelButtonClick("notif")()}
+                        renderPanel={false}
+                      />
+                    ) : (
+                      <ActionIconButton
+                        size="xl"
+                        title={label}
+                        aria-expanded={isActive}
+                        onClick={handlePanelButtonClick(key)}
+                        className={isActive ? PANEL_BUTTON_SELECTED_CLASS : undefined}
+                      >
+                        <KeyIcon className="h-5 w-5" strokeWidth={1.5} />
+                      </ActionIconButton>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {/* Separator between the icon-button row and the "View All
+                Apps" kebab — same `orientation="vertical"` + `h-auto
+                self-stretch` sizing lyra-ui's own vertical Separator usage
+                uses elsewhere (see `dashboard-card.tsx`'s metric-row
                 divider) so it stretches to match the row's height inside
                 AppHeader's `flex items-center` actions container instead of
                 a hand-picked fixed height. */}
-            <Separator orientation="vertical" className="h-auto self-stretch" />
+            <Separator orientation="vertical" className="h-auto self-stretch pl-lyra-1 pr-lyra-1" />
+            <Tooltip content="View All Apps" placement="bottom" disabled={appsMenuOpen}>
+              <span className="inline-flex">
+                <KebabMenuButton
+                  items={appsMenuItems}
+                  ariaLabel="View All Apps"
+                  icon={<LayoutGrid className="h-5 w-5" strokeWidth={1.5} />}
+                  // Same "outline" treatment as `Button`'s own `variant=
+                  // "outline"` (button.tsx) — bordered/`bg-lyra-bg-control`
+                  // rather than the plain borderless icon button every
+                  // other AppHeader trigger uses, so this one reads as a
+                  // distinct "more" control rather than just another app
+                  // shortcut. `KebabMenuButton` isn't built on `Button`
+                  // (it's its own hand-rolled trigger), so these classes are
+                  // reproduced directly rather than passed as a `variant` prop.
+                  className="h-11 w-11 rounded-lyra-sm border border-lyra-border-default bg-lyra-bg-control text-lyra-fg-action hover:bg-lyra-state-hover active:bg-lyra-state-pressed data-[state=open]:bg-lyra-state-hover"
+                  onOpenChange={setAppsMenuOpen}
+                />
+              </span>
+            </Tooltip>
             <AgentProfile
               name="John Smith"
               initials="JS"
@@ -4212,6 +4913,12 @@ export function AgentNextGenPage({
           open={navOpen}
           onToggle={() => setNavOpen((v) => !v)}
           overlay={isNavNarrow}
+          // Home/Settings render above the "Assignments (N active)" caption
+          // + interaction cards below (see `itemsFirst`'s own doc comment
+          // in left-nav.tsx) — matches the reference screenshot's "Home
+          // (active), separator, Assignments (N active)" order, rather than
+          // the component's default "cards above the rail" arrangement.
+          itemsFirst
           pinnedHeader={
             <CreateNew
               title="New Outbound"
@@ -4227,13 +4934,23 @@ export function AgentNextGenPage({
           }
           header={
             <>
+              <AssignmentsSectionCaption
+                expanded={navOpen}
+                count={interactions.length}
+                sort={assignmentSort}
+                onSortChange={setAssignmentSort}
+              />
               {/* No cards until the agent actually starts one above — each
                   card is one contact (or quick-dialed number), with every
                   channel they're being reached on folded into that same
                   card unless it's a different address on an already-open
                   type, which opens as its own row instead (see
-                  handleStartCall's merge-by-type+address logic). */}
-              {interactions.map((interaction) => {
+                  handleStartCall's merge-by-type+address logic). Sorted per
+                  `assignmentSort` (`AssignmentsSectionCaption`'s own sort
+                  button) — `interactions` itself stays in insertion order
+                  for everything else that reads it, only this rendering
+                  reorders a copy. */}
+              {sortAssignments(interactions, assignmentSort).map((interaction) => {
                 const mostRecentId = interaction.channels[interaction.channels.length - 1]?.id;
                 const currentId = interaction.currentChannelId ?? mostRecentId;
                 const channels: InteractionChannel[] = interaction.channels.map((c) => ({
@@ -4359,7 +5076,29 @@ export function AgentNextGenPage({
                         activeInteraction.channels.length > 0 && (
                           <div className="flex items-center gap-3">
                             <div className="h-6 w-px bg-lyra-border-subtle" aria-hidden="true" />
-                            <ChannelToggleGroup>
+                            <ChannelToggleGroup
+                              // Add Channel "+" lives inside this same
+                              // bordered/rounded shell now (per explicit
+                              // request), via `action` — not another
+                              // `ChannelToggle` child, so it doesn't get
+                              // cloned with `isFirst`/`role="radio"` or the
+                              // active-pill treatment. `ml-0.5` (2px) is its
+                              // own separation from the last pill — plain
+                              // whitespace per a screenshot of the target
+                              // look, not the divider rule `ChannelToggle`
+                              // uses between its own items (tried that
+                              // first; see `action`'s own doc comment in
+                              // channel-row.tsx). Primary/solid treatment —
+                              // same tokens as `Button`'s `variant="default"`
+                              // (button.tsx) — rather than the ghost look
+                              // every other icon button here defaults to,
+                              // per explicit request to make this one read
+                              // as the primary action in the row.
+                              action={getHeaderAction(
+                                activeInteraction.id,
+                                "ml-0.5 h-9 w-9 bg-lyra-bg-primary text-lyra-fg-on-primary hover:bg-lyra-state-hover-primary active:bg-lyra-state-pressed-primary"
+                              )}
+                            >
                               {activeInteraction.channels.map((c) => {
                                 const key = c.id ?? c.type;
                                 return (
@@ -4379,7 +5118,6 @@ export function AgentNextGenPage({
                                 );
                               })}
                             </ChannelToggleGroup>
-                            {getHeaderAction(activeInteraction.id)}
                           </div>
                         )
                       }
@@ -4452,123 +5190,61 @@ export function AgentNextGenPage({
               ) : (
                 <>
                   {showPageHeader && (
-                    <TabList overflowMenu className="px-6 bg-lyra-bg-surface-base shrink-0">
-                      <Tab active={activeDeskTab === "home"} onClick={() => setActiveDeskTab("home")}>
-                        Dashboard
-                      </Tab>
-                      <Tab active={activeDeskTab === "customers"} onClick={() => setActiveDeskTab("customers")}>
-                        Customers
-                      </Tab>
-                      <Tab active={activeDeskTab === "accounts"} onClick={() => setActiveDeskTab("accounts")}>
-                        Accounts
-                      </Tab>
-                      <Tab active={activeDeskTab === "tickets"} onClick={() => setActiveDeskTab("tickets")}>
-                        Tickets
-                      </Tab>
-                      <Tab active={activeDeskTab === "interactions"} onClick={() => setActiveDeskTab("interactions")}>
-                        Interactions
-                      </Tab>
-                      <Tab active={activeDeskTab === "wem"} onClick={() => setActiveDeskTab("wem")}>
-                        WEM
-                      </Tab>
-                    </TabList>
+                    <>
+                      {/* Page header — main title is the same time-of-day
+                          greeting the dashboard body used to render by hand
+                          (`lyra-heading-2xl` "Good {period}, {name}"), now a
+                          real `PageHeader` sitting above the tab row instead
+                          of below it.
+
+                          `actions` holds a `Badge` reading the "today"
+                          Assignments Resolved count straight off
+                          `PerformanceSummaryCard`'s own data source
+                          (`PERFORMANCE_DATA_BY_RANGE.today.casesResolved`)
+                          so the two numbers can't drift out of sync —
+                          hardcoded to the "today" range regardless of
+                          whatever range that card's own `DateFilterChip`
+                          currently has selected, since this badge's copy is
+                          always "resolved today", not date-filterable
+                          itself. Floats to the header's right side the same
+                          way the "New Outbound" `CreateNew` trigger it
+                          replaced did — `actions` is always the right-hand
+                          slot in `PageHeader`'s own title/actions row. */}
+                      <PageHeader
+                        title={`Good ${getGreetingPeriod()}, ${CURRENT_AGENT_FIRST_NAME}`}
+                        subtitle={formatHeaderDateTime()}
+                        actions={
+                          <Badge color="green" variant="subtle">
+                            {PERFORMANCE_DATA_BY_RANGE.today.casesResolved} Assignments resolved today
+                          </Badge>
+                        }
+                      />
+                      <TabList overflowMenu className="px-6 bg-lyra-bg-surface-base shrink-0">
+                        <Tab active={activeDeskTab === "home"} onClick={() => setActiveDeskTab("home")}>
+                          Dashboard 1
+                        </Tab>
+                        <Tab active={activeDeskTab === "customers"} onClick={() => setActiveDeskTab("customers")}>
+                          Dashboard 2
+                        </Tab>
+                        <Tab active={activeDeskTab === "accounts"} onClick={() => setActiveDeskTab("accounts")}>
+                          Dashboard 3
+                        </Tab>
+                        <Tab active={activeDeskTab === "tickets"} onClick={() => setActiveDeskTab("tickets")}>
+                          Dashboard 4
+                        </Tab>
+                        <Tab active={activeDeskTab === "interactions"} onClick={() => setActiveDeskTab("interactions")}>
+                          Dashboard 5
+                        </Tab>
+                        <Tab active={activeDeskTab === "wem"} onClick={() => setActiveDeskTab("wem")}>
+                          Dashboard 6
+                        </Tab>
+                      </TabList>
+                    </>
                   )}
               {/* Body row: main content + interior panel */}
               <div className="relative flex flex-1 overflow-hidden">
                 <div className="flex flex-1 flex-col min-w-0 overflow-y-auto px-6 py-6">
                   <div className="w-full max-w-[1200px] mx-auto lyra-container-grid-wrap">
-                    {/* ── Greeting header toolbar ──
-                        Title/subtitle on the left, action buttons pinned to
-                        the right — same "title block + trailing actions row"
-                        shape as `DashboardCard`/`ContainerHeader`'s own
-                        `headerActions` slot elsewhere in this file, just
-                        hand-built here rather than composed from those
-                        (they're card headers, not a full-bleed page-level
-                        toolbar; `PageHeader` renders its title at
-                        `lyra-heading-lg`, a step down from this greeting's
-                        intentionally larger `lyra-heading-2xl`, so reusing
-                        it would shrink the greeting rather than just
-                        toolbar-ing the actions).
-
-                        `flex-wrap` — unlike `ContainerHeader`'s own
-                        title/actions row (which needs an opt-in container
-                        query, see that component's `actionsWrap` doc
-                        comment), a plain CSS wrap works here with no extra
-                        plumbing: this `h1`/`p` pair has no `truncate`/
-                        `whitespace-nowrap` constraining it, so its real
-                        (un-shrunk) content width is a genuine signal the
-                        browser can wrap against, instead of the artificially
-                        tiny "true" width truncated text reports. Without
-                        this, the toolbar was squeezing "Good morning, John"
-                        down word-by-word to make room for a pinned-right
-                        button that never moved, confirmed from a screenshot —
-                        `justify-between` naturally left-aligns the button
-                        once it's alone on its own wrapped line, no extra
-                        alignment override needed. */}
-                    <div className="flex flex-wrap items-start justify-between gap-4">
-                      <div>
-                        <h1 className="lyra-heading-2xl text-lyra-fg-default">
-                          Good {getGreetingPeriod()}, {CURRENT_AGENT_FIRST_NAME}
-                        </h1>
-                        <p className="mt-1 lyra-body-md text-lyra-fg-secondary">Below is your team's queue for the day:</p>
-                      </div>
-                      {/* Actions toolbar — `inline-flex` (not a bare
-                          fragment) so it shrinks to its own content width
-                          instead of stretching, same reasoning as
-                          `ContainerHeader`'s own `actions` wrapper. This
-                          matters more than usual here: `CreateNew`'s root is
-                          unconditionally `<span className="flex w-full
-                          justify-center">` (see create-new.tsx's `trigger`
-                          doc comment — built so its *expanded* button fills
-                          a full-width LeftNav rail/footer). Nested directly
-                          inside a `justify-between` row, that inner `w-full`
-                          still resolves against (and stretches to fill)
-                          whatever space `justify-between` leaves it, and
-                          `justify-center` then centers the actual button
-                          inside that oversized box — the button visibly
-                          floated mid-row instead of hugging the true right
-                          edge (confirmed via devtools: the flex item's own
-                          box was hundreds of pixels wider than the button
-                          it contained). Giving this wrapper `inline-flex`
-                          makes it shrink-to-fit around `CreateNew`, so its
-                          child span's `w-full` resolves against *that*
-                          already-content-sized box instead — a plain,
-                          standard "shrink-to-fit parent around a 100%-width
-                          child" containment, no lyra-ui change needed. Also
-                          the natural place to add more toolbar buttons
-                          later (`gap-2` already spaces them). */}
-                      <div className="inline-flex items-center gap-2 shrink-0">
-                        {/* A second, independent `CreateNew` trigger — same
-                            `outboundConfig`/`handleStartCall`/`handleQuickDial`
-                            as the LeftNav's own "New Outbound" button (see
-                            `pinnedHeader` below), so picking a contact+channel
-                            here starts an interaction exactly the same way.
-                            Deliberately omits `launchRequest`/
-                            `onLaunchRequestHandled`: those wire the *other*
-                            instance to every card's own "+" (Add Channel)
-                            deep-link (`useOutboundAddButton`) — sharing that
-                            same state here would make both instances react
-                            (and try to open) to a single card's "+" click.
-                            `expanded` (not the LeftNav's `navOpen`-driven
-                            value) keeps this one always showing its
-                            icon+label — it isn't inside a collapsible rail,
-                            so there's no "compact" state for it to collapse
-                            into. Already renders as a solid primary button
-                            (`CreateNew`'s own trigger styling — see its
-                            `trigger` doc comment in create-new.tsx), not a
-                            one-off className here. */}
-                        <CreateNew
-                          title="New Outbound"
-                          outbound={{
-                            ...outboundConfig,
-                            onStartCall: handleStartCall,
-                            onQuickDial: handleQuickDial,
-                          }}
-                          expanded
-                        />
-                      </div>
-                    </div>
-
                     {/* ── Queue widgets ──
                         `DashboardQueue` ("cards" variant, its default) —
                         the numbers come straight from `latestContacts`
@@ -4754,18 +5430,20 @@ export function AgentNextGenPage({
             blocks (one per panel); with only one physical container now,
             there's only one. */}
         {panelVariant === "docked" && (
-          <div className="pb-3" style={{
+          <div className="flex h-full pb-3" style={{
             width: panelState === "open" ? panelWidth : 0,
+            height: "100%",
             marginRight: panelState === "open" ? 12 : 0,
             overflow: "hidden",
             flexShrink: 0,
             transition: panelIsResizing ? "none" : "width 250ms cubic-bezier(0.4, 0, 0.2, 1)",
           }}>
             <div
-              className="h-full animate-in fade-in-0 duration-150"
+              className="flex flex-col h-full animate-in fade-in-0 duration-150"
               style={{
                 width: panelWidth,
-                display: panelState === "open" ? "block" : "none",
+                height: "100%",
+                display: panelState === "open" ? "flex" : "none",
               }}
             >
               {sharedPanel}

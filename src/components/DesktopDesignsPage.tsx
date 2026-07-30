@@ -5,7 +5,6 @@ import {
   Copy,
   Trash2,
   CircleCheck,
-  MoreVertical,
   Plus,
   Minus,
 } from "lucide-react";
@@ -28,6 +27,7 @@ import {
   TableFooter,
   ColumnToggle,
   useColumnReorder,
+  KebabMenuButton,
 } from "@nicecxone/lyra-ui";
 import type { SortDirection, ColumnToggleItem, TreeMenuItem } from "@nicecxone/lyra-ui";
 
@@ -292,9 +292,18 @@ export function DesktopDesignsPage({ showBadge = false, onAiPanelToggle }: { sho
                   );
                 })}
                 <TableCell className="w-[48px] shrink-0 sticky right-0 bg-lyra-bg-surface-base">
-                  <button className="flex h-7 w-7 items-center justify-center rounded-lyra-sm text-lyra-fg-secondary hover:bg-lyra-bg-surface-shell transition-colors">
-                    <MoreVertical className="h-4 w-4" strokeWidth={1.5} />
-                  </button>
+                  {/* Shared `KebabMenuButton` (composes `MenuRadix`), not a
+                      hand-rolled `<button>` — same per-row actions as the
+                      toolbar's own bulk Edit/Copy/Delete above, scoped to
+                      just this record. */}
+                  <KebabMenuButton
+                    ariaLabel={`More options for ${record.name}`}
+                    items={[
+                      { id: "edit", label: "Edit", icon: <Pencil className="h-4 w-4" strokeWidth={1.5} /> },
+                      { id: "copy", label: "Copy", icon: <Copy className="h-4 w-4" strokeWidth={1.5} /> },
+                      { id: "delete", label: "Delete", icon: <Trash2 className="h-4 w-4" strokeWidth={1.5} />, destructive: true },
+                    ]}
+                  />
                 </TableCell>
               </TableRow>
             ))}

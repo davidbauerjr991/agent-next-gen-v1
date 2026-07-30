@@ -2,6 +2,10 @@
 
 This app consumes the shared `lyra-ui` design system via a live source alias (`@nicecxone/lyra-ui`), not a local component library. Before writing or editing any UI code here:
 
+## Rule zero: never hand-roll a button
+
+**Every clickable, button-shaped element in this app is `Button`, `ActionIconButton`, or an existing lyra-ui button atom (`FavoriteButton`, `PanelPinButton`, `KebabMenuButton`, `OutboundAddButton`, etc.), imported from `@nicecxone/lyra-ui` — never a local hand-rolled `<button>` with copied or guessed styling, no matter how small the target looks (a single icon button, a pill, a toggle).** See `../lyra-ui/CONTRIBUTING.md`'s §0 for the incident this rule was written after: `lyra-ui`'s own `CreateNew` "New Outbound" trigger hand-copied `Button`'s colors correctly but used the wrong typography class for its label (`lyra-body-md`, 400 weight, instead of `lyra-label`, 500 weight) — two nearly-identical class names that only differ in weight, so the mismatch shipped and rendered visibly lighter than every other button until caught from a screenshot. Check this before writing or editing any button-shaped element here, every time.
+
 - Import UI atoms from `@nicecxone/lyra-ui` — never build or reach for a local `src/components/ui/*` reimplementation of something that already exists there.
 - Check `lyra-ui/src/index.ts` and that component's `__stories__` file *before* building anything — reuse the existing component, and match the exact markup shape shown in its story, not just the prop types (e.g. a plain labeled `Checkbox` is a manual `<label>` wrapper around it in most stories, not the `label` prop).
 - Never modify a `lyra-ui` core component from here. If something this app needs doesn't exist yet in `lyra-ui`, that's a signal to add it there — not approximate it locally.
