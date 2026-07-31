@@ -19,6 +19,7 @@ import {
   Button,
   Textarea,
   Label,
+  InlineNotification,
   Accordion,
   ActionIconButton,
   KebabMenuButton,
@@ -52,6 +53,9 @@ import {
   ChannelToggle,
   ChannelToggleGroup,
   Popover,
+  Menu,
+  WarningIconSolid,
+  PanelHeader,
   RadioGroup,
   RadioGroupItem,
   DateRangePicker,
@@ -72,6 +76,8 @@ import {
   type CreateNewOutboundContact,
   type InteractionChannel,
   type ChannelType,
+  type ChannelOutcomeConfig,
+  type TagPickerOption,
   type AgentStatus,
   type AppMenuGroup,
   type AgentNotification,
@@ -219,36 +225,63 @@ const OUTBOUND_SKILLS: NonNullable<CreateNewOutboundConfig["groups"][number]["co
   { id: "s2", name: "Technical Support", initials: "TS", subtitle: "SKL-03", avatarClassName: "bg-lyra-accent-blue-soft text-lyra-accent-blue-strong",   channels: ["voice", "email"], status: "busy",      queueCount: 7, waitTimeSeconds: 95 },
 ];
 
+// Every group the "New Outbound" filter dropdown COULD show — kept as its
+// own named constant, separate from `OUTBOUND_CONFIG.groups` below, so
+// "Dial Pad" can be hidden from the dropdown without deleting it: per
+// explicit request ("hide it don't destroy it"), the group definition
+// itself stays fully intact here, just filtered out before being handed
+// to `CreateNew`. Restoring it later is a one-line revert (drop the
+// `.filter(...)` below), not re-authoring the group from scratch.
+const OUTBOUND_GROUPS: CreateNewOutboundConfig["groups"] = [
+  // No dedicated "Favorites" entry in the group dropdown, per explicit
+  // request — this "all" entry replaces it as the DEFAULT/starting
+  // filter instead (`defaultGroupId` below) rather than sitting beside
+  // it as a separate option. Still uses `kind: "favorites"` under the
+  // hood (create-new.tsx's own behavior for that kind is exactly what's
+  // wanted here: idle state shows only starred contacts, and typing a
+  // search widens to every contact across every group — see
+  // `activeGroupContacts`'s own doc comment there), just labeled/keyed
+  // as "All" instead of "Favorites" since that's the only way an agent
+  // reaches this view now.
+  // `emptyMessage` per explicit request — plain "Search above to find a
+  // contact" once nothing's favorited yet, no "No favorites yet —"
+  // prefix (that phrasing read like an error/apology for something
+  // missing, when the real point is just "type to search").
+  { id: "all", label: "All", kind: "favorites", emptyMessage: "Search above to find a contact" },
+  { id: "agents", label: "Agents", contacts: OUTBOUND_AGENTS },
+  { id: "teams", label: "Teams", contacts: OUTBOUND_TEAMS },
+  { id: "skills", label: "Skills", contacts: OUTBOUND_SKILLS },
+  { id: "customers", label: "Customers", contacts: OUTBOUND_CUSTOMERS },
+  // Hidden from the dropdown below (`HIDDEN_OUTBOUND_GROUP_IDS`), per
+  // explicit request — NOT deleted. Still a complete, valid group
+  // definition; `onQuickDial`/`handleQuickDial` (this config's own
+  // handler, further down) are untouched and still wired up, they just
+  // have no dropdown entry to reach this group's own dialpad UI through
+  // right now.
+  { id: "dialpad", label: "Dial Pad", kind: "dialpad" },
+];
+
+// Group ids hidden from the "New Outbound" filter dropdown without being
+// removed from `OUTBOUND_GROUPS` above — see that constant's own doc
+// comment for why. Add/remove ids here to hide/restore a group; the
+// group's own definition never needs to change.
+const HIDDEN_OUTBOUND_GROUP_IDS: string[] = ["dialpad"];
+
 const OUTBOUND_CONFIG: CreateNewOutboundConfig = {
   outboundTitle: "New Outbound",
-  groups: [
-    // No dedicated "Favorites" entry in the group dropdown, per explicit
-    // request — this "all" entry replaces it as the DEFAULT/starting
-    // filter instead (`defaultGroupId` below) rather than sitting beside
-    // it as a separate option. Still uses `kind: "favorites"` under the
-    // hood (create-new.tsx's own behavior for that kind is exactly what's
-    // wanted here: idle state shows only starred contacts, and typing a
-    // search widens to every contact across every group — see
-    // `activeGroupContacts`'s own doc comment there), just labeled/keyed
-    // as "All" instead of "Favorites" since that's the only way an agent
-    // reaches this view now. `searchPlaceholder` describes the
-    // search-the-whole-database behavior instead of the generic "Search
-    // all" every other group's fallback text would otherwise produce.
-    // `emptyMessage` per explicit request — plain "Search above to find a
-    // contact" once nothing's favorited yet, no "No favorites yet —"
-    // prefix (that phrasing read like an error/apology for something
-    // missing, when the real point is just "type to search").
-    { id: "all", label: "All", kind: "favorites", emptyMessage: "Search above to find a contact", searchPlaceholder: "Enter phone, email or search term" },
-    { id: "agents", label: "Agents", searchPlaceholder: "Search Agents", contacts: OUTBOUND_AGENTS },
-    { id: "teams", label: "Teams", searchPlaceholder: "Search teams", contacts: OUTBOUND_TEAMS },
-    { id: "skills", label: "Skills", searchPlaceholder: "Search skills", contacts: OUTBOUND_SKILLS },
-    { id: "customers", label: "Customers", searchPlaceholder: "Search customers", contacts: OUTBOUND_CUSTOMERS },
-    { id: "dialpad", label: "Dial Pad", kind: "dialpad" },
-  ],
+  groups: OUTBOUND_GROUPS.filter((g) => !HIDDEN_OUTBOUND_GROUP_IDS.includes(g.id)),
   // "all" (not "agents") — per explicit request, the New Outbound picker
   // now opens on the "All" filter (favorited contacts idle, full-database
   // search once typed) by default instead of Agents.
   defaultGroupId: "all",
+  // One placeholder for the whole flow, not per-group — per explicit
+  // request/confirmed UX bug: search matches name/subtitle/phone/email
+  // identically no matter which group filter is selected, so a
+  // placeholder that changed per group (e.g. "Search Agents") falsely
+  // implied switching the filter changed what the box searched for. See
+  // `CreateNewOutboundConfig.searchPlaceholder`'s own doc comment in
+  // create-new.tsx.
+  searchPlaceholder: "Enter phone, email or search term",
   // Per explicit request: the New Outbound picker's contact list isn't
   // ready to show yet — hide it (and its pagination footer) for every
   // group, leaving just the group dropdown ("Choose group" — Favorites/
@@ -426,6 +459,67 @@ interface ActiveInteraction {
    *  session details, no messages yet" state for a brand-new outbound SMS
    *  interaction, per explicit request. */
   startedFresh?: boolean;
+  /**
+   * Messages actually sent/received during this session, appended after
+   * whatever `InteractionTranscript` otherwise shows (the fixed mock log, or
+   * nothing yet for a `startedFresh` interaction) — the one part of this
+   * interaction's transcript that's genuinely live rather than static demo
+   * data. Populated by `handleSendMessage`: an agent-typed message from
+   * `InteractionComposer` is pushed immediately, then a simulated customer
+   * reply is pushed a couple seconds later (there's no real backend here to
+   * receive an actual customer response from). Kept on `ActiveInteraction`
+   * itself (not local component state) so it survives switching away to a
+   * different interaction and back via the left nav, instead of resetting
+   * every time `InteractionTranscript` remounts.
+   */
+  liveMessages?: TranscriptMessage[];
+  /**
+   * True when this interaction was reopened from a CLOSED Contact History
+   * row (`handleReopenContactHistoryEntry` — see `ContactHistoryEntry.closed`'s
+   * own doc comment for what counts as closed). Read-only viewing: the
+   * active interaction's detail page shows an inline "You are viewing a
+   * closed interaction." banner, renders no `InteractionComposer` (no
+   * reply), and every open channel's kebab is hidden (`removable: false` on
+   * the `InteractionChannel`s built for it) — no status-changing ("Outcome")
+   * or other action available on a conversation that's already over.
+   * Reopening a NON-closed row (New/Open/Pending/Escalated/Resolved) leaves
+   * this `false`/unset, same as any normally-started interaction — the
+   * agent can reply to it like any other open assignment.
+   */
+  closed?: boolean;
+  /**
+   * The status ("Open"/"Pending"/"Escalated"/"Resolved"/"Closed") last
+   * explicitly assigned via the session-status popover
+   * (`TranscriptSessionSeparator`) on THIS interaction's current/most-recent
+   * session — i.e. whichever session is last in `InteractionTranscript`'s
+   * own `sessionsToRender` (the freshly-launched synthetic session, the
+   * shared mock log's second/follow-up session, or Voice/Email's single
+   * session). Undefined until the agent actually changes it, at which point
+   * that session's own hardcoded default status (`TranscriptSession.status`)
+   * still applies.
+   *
+   * Kept here, on `ActiveInteraction` itself, for the same reason
+   * `liveMessages`/`closed` are — `InteractionTranscript` isn't remounted
+   * per-interaction (no `key` prop at its call site), so a status held only
+   * in that component's own local state wouldn't actually travel with a
+   * specific interaction: switching to a different interaction and back
+   * would either lose it, or (worse, since `TRANSCRIPT_SESSIONS`' session
+   * ids are literally shared/static across every chat/SMS/WhatsApp
+   * interaction) leak one interaction's status onto a completely different
+   * one that happens to render the same session id.
+   *
+   * Read by `buildDismissedContactHistoryEntry` when "Unassign & Dismiss"
+   * logs this interaction to Contact History (falls back to "Resolved" if
+   * never explicitly set — see that function's own comment) — per explicit
+   * request, the logged row should reflect whatever status was actually
+   * last assigned, not always "Resolved". Written back onto a freshly
+   * reopened interaction by `handleReopenContactHistoryEntry` (from
+   * `entry.statusLabel`), so reopening a dismissed (or hand-authored)
+   * Contact History row picks the current session back up in that same
+   * status instead of resetting to whatever hardcoded default status
+   * `TRANSCRIPT_SESSIONS`/`_VOICE`/`_EMAIL` otherwise assigns it.
+   */
+  currentStatus?: string;
 }
 
 /** Fallback case id for interactions with no real customer/agent/team/skill
@@ -1382,23 +1476,62 @@ function PerformanceSummaryCard() {
    action, rather than inventing a second icon for the same meaning) — no
    hand-rolled badge/pill markup.
 
-   Row set is driven by the selected date range (`CONTACT_HISTORY_BY_RANGE`):
-   "Today" (the default on login) shows `TODAY_CONTACT_HISTORY`'s 4 rows;
-   "Last 48 Hours" adds the 5 hand-authored `CONTACT_HISTORY` rows on top
-   of that; "Last 72 Hours" adds 5 more (`EXTENDED_CONTACT_HISTORY`)
-   pulled from the shared customer "database" (`CREATE_NEW_CUSTOMERS`, the
-   same fixture `OUTBOUND_CUSTOMERS` above already sources from) rather than
-   inventing unrelated names. Each range is a strict superset of the one
-   before it — today's own rows never disappear just because a wider range
-   is selected. */
+   Row set is driven by the selected date range (`buildContactHistoryByRange`):
+   "Today" starts EMPTY on login — there's no real backend here to have
+   loaded any actual prior-contact history from, so this app no longer
+   pretends otherwise with hand-authored placeholder rows the way it used
+   to (a `TODAY_CONTACT_HISTORY` fixture, since removed). "Today" instead
+   fills in for real, as the agent actually works: "Unassign & Dismiss"ing
+   a whole assignment (`handleDismissInteraction`, main component) is what
+   counts as a completed contact in this demo, and appends a genuine
+   `ContactHistoryEntry` (`buildDismissedContactHistoryEntry`) onto
+   `dismissedContactHistory` state — the one truly live piece of this
+   card's data. Dismissing does NOT change that entry's status, though: it
+   logs at the same neutral "Resolved" default every hand-authored
+   `CONTACT_HISTORY` row's own closed-the-loop case uses, never a forced
+   "Closed"/read-only one — an earlier pass tried that and it conflated
+   leaving an assignment (a LeftNav/UI action) with the assignment's own
+   status (a real-world fact about the case); per explicit follow-up,
+   dismissing must never itself decide or change that. "Last 48 Hours"
+   adds the 5 hand-authored `CONTACT_HISTORY` rows on top of whatever's
+   been dismissed so far; "Last 72 Hours" adds 5 more
+   (`EXTENDED_CONTACT_HISTORY`) pulled from the shared customer "database"
+   (`CREATE_NEW_CUSTOMERS`, the same fixture `OUTBOUND_CUSTOMERS` above
+   already sources from) rather than inventing unrelated names. Each range
+   is a strict superset of the one before it — today's own (dismissed)
+   rows never disappear just because a wider range is selected. */
 
-/** Case-status color — "critical" (red, Escalated), "info" (blue, In
- *  Progress), "success" (green, Resolved), "neutral" (gray, New). Reuses
- *  `Badge`'s own `BadgeCircleVariant` names directly (see the status
- *  badge's own rendering below) rather than a separate string union, so
- *  there's no separate mapping table that could drift out of sync with
- *  what `Badge` actually accepts. */
-type ContactHistoryStatusVariant = "critical" | "info" | "success" | "neutral";
+/** Case-status color — "critical" (red, Escalated), "info" (blue, Pending),
+ *  "warning" (orange, Open), "success" (green, Resolved), "neutral" (gray,
+ *  New/Closed). Reuses `Badge`'s own `BadgeCircleVariant` names directly
+ *  (see the status badge's own rendering below) rather than a separate
+ *  string union, so there's no separate mapping table that could drift out
+ *  of sync with what `Badge` actually accepts. Gained "warning" alongside
+ *  `SESSION_STATUS_TO_CONTACT_HISTORY_VARIANT` below — until then this only
+ *  ever needed to represent the 4 statuses this card's own fixtures used
+ *  (Escalated/Resolved/New, "In Progress" never actually used), not the
+ *  full 5-status vocabulary `TRANSCRIPT_SESSION_STATUS_OPTIONS` offers. */
+type ContactHistoryStatusVariant = "critical" | "info" | "warning" | "success" | "neutral";
+
+/** Maps a session status (`TRANSCRIPT_SESSION_STATUS_OPTIONS`' labels —
+ *  Open/Pending/Escalated/Resolved/Closed) onto this card's own
+ *  `ContactHistoryStatusVariant`, so `buildDismissedContactHistoryEntry`
+ *  can log whatever status was actually last assigned to a dismissed
+ *  interaction (`ActiveInteraction.currentStatus`) with a matching dot
+ *  color, instead of a hardcoded "Resolved"/"success" regardless. "Closed"
+ *  maps to "neutral" (gray) rather than reusing "critical" — a closed
+ *  contact isn't a negative outcome the way "Escalated" is, and reusing red
+ *  for both would read as if every closed row were also escalated. Falls
+ *  back to "neutral" for any status not listed (defensive only — every
+ *  value `TRANSCRIPT_SESSION_STATUS_OPTIONS` can actually produce is
+ *  covered). */
+const SESSION_STATUS_TO_CONTACT_HISTORY_VARIANT: Record<string, ContactHistoryStatusVariant> = {
+  Open: "warning",
+  Pending: "info",
+  Escalated: "critical",
+  Resolved: "success",
+  Closed: "neutral",
+};
 
 interface ContactHistoryEntry {
   id: string;
@@ -1424,6 +1557,25 @@ interface ContactHistoryEntry {
    *  does — see `handleRedial`'s own doc comment for why a synthetic id
    *  silently broke that card's "+" (Add Channel) button. */
   customerId?: string;
+  /**
+   * True for a row that represents a genuinely closed/over conversation —
+   * NOT set by "Unassign & Dismiss" (`buildDismissedContactHistoryEntry`
+   * logs a normal "Resolved" row, per explicit follow-up: dismissing must
+   * never itself decide or change an assignment's status; see this file's
+   * own "Contact History card" doc comment above), only ever hand-authored
+   * on a `ContactHistoryEntry` directly if a future row needs it. Every
+   * status this app's own rows actually use (New/Open/Pending/Escalated/
+   * Resolved — the hand-authored `CONTACT_HISTORY`/`EXTENDED_CONTACT_HISTORY`
+   * rows, and every dismissed row, all use "Resolved"/"Escalated") is still
+   * an active, appendable conversation once reopened; none of them set
+   * this. `closed` drives `handleReopenContactHistoryEntry` →
+   * `ActiveInteraction.closed`: a closed interaction reopens read-only (an
+   * inline "You are viewing a closed interaction." banner, no
+   * `InteractionComposer`, no per-channel kebab actions) instead of a
+   * normal, reply-able one. A plain boolean rather than checking
+   * `statusLabel === "Closed"` by string — display text shouldn't double as
+   * the thing behavior branches on. */
+  closed?: boolean;
 }
 
 const CONTACT_HISTORY_CHANNEL_ICON: Record<ContactHistoryEntry["channelType"], LucideIcon> = {
@@ -1546,28 +1698,68 @@ function buildContactHistoryFromCustomers(
   });
 }
 
-// Fixed customer indexes + content templates for the 4 "Today" rows — the
-// range shown on page load, so these need to read as *today's* activity
-// (minutes/an hour or two ago, not "1d ago"+). Indexes chosen to land on
-// 4 different customers than "Last 72 Hours" below uses (no index overlap
-// with EXTENDED_CONTACT_HISTORY_CUSTOMER_INDEXES) and to alternate
-// voice/chat channel types the same way the hand-authored CONTACT_HISTORY
-// rows above do (this fixture's own channel-assignment rule — see
-// create-new-customers-data.ts's `buildCustomers` — never actually
-// produces an email-only customer, so "Today" mixes voice/chat like
-// "Last 72 Hours" already does rather than trying to force an email row).
-const TODAY_CONTACT_HISTORY_CUSTOMER_INDEXES = [1, 8, 13, 15];
-const TODAY_CONTACT_HISTORY_TEMPLATES: ContactHistoryTemplate[] = [
-  { statusLabel: "Resolved", statusVariant: "success", description: "Order status inquiry — provided tracking link and delivery estimate", timeAgo: "12m ago", duration: "5m 40s" },
-  { statusLabel: "Resolved", statusVariant: "success", description: "Account access issue — reset password after failed login attempts", timeAgo: "45m ago", duration: "9m 22s" },
-  { statusLabel: "Escalated", statusVariant: "critical", description: "Billing dispute escalated to Tier 2 for manual review", timeAgo: "1h ago", duration: "11m 08s" },
-  { statusLabel: "Resolved", statusVariant: "success", description: "Subscription renewal question — confirmed upcoming billing date", timeAgo: "3h ago", duration: "6m 15s" },
-];
-const TODAY_CONTACT_HISTORY: ContactHistoryEntry[] = buildContactHistoryFromCustomers(
-  TODAY_CONTACT_HISTORY_CUSTOMER_INDEXES,
-  TODAY_CONTACT_HISTORY_TEMPLATES,
-  "ch-today"
-);
+/** Converts a just-dismissed `ActiveInteraction` into a real Contact History
+ *  row — "Unassign & Dismiss"ing a whole assignment (`handleDismissInteraction`,
+ *  main component) is the one thing in this demo that actually completes a
+ *  contact, so it's the one thing that logs a row here, prepended onto
+ *  `dismissedContactHistory` (newest first, same descending-recency order
+ *  every other range's own rows already read in). Ending just ONE channel of
+ *  a card that's still otherwise open (`handleDismissChannel`) does NOT call
+ *  this — the interaction as a whole isn't actually over yet, so there's
+ *  nothing to log.
+ *
+ *  This row's status reflects whatever was actually last assigned to this
+ *  interaction, NOT a hardcoded default: `statusLabel: interaction.
+ *  currentStatus ?? "Resolved"` (falls back to "Resolved" — the same
+ *  neutral default every hand-authored `CONTACT_HISTORY` row's own "closed
+ *  the loop" case uses — only if the agent never actually touched the
+ *  status popover this visit), `statusVariant` resolved from that label via
+ *  `SESSION_STATUS_TO_CONTACT_HISTORY_VARIANT`. Per explicit request: an
+ *  assignment that was left at, say, "Escalated" or "Pending" when
+ *  dismissed should log — and later reopen — AT that status, not silently
+ *  reset to "Resolved". This is still a different thing from the OLDER
+ *  "force `closed: true`" mistake documented below: `currentStatus` can
+ *  legitimately BE "Closed" (the agent closed the contact themselves before
+ *  dismissing), but that's what they actually chose, not something this
+ *  function invents on their behalf — `closed`/`ActiveInteraction.closed`
+ *  (the read-only-reopen flag) is still left unset entirely regardless of
+ *  what `currentStatus` says, so reopening this row later
+ *  (`handleReopenContactHistoryEntry`) behaves like any other normal,
+ *  reply-able row (able to change status again, composer available) — no
+ *  forced read-only banner, even for a "Closed"-status row. An earlier pass
+ *  forced `statusLabel: "Closed"` AND `closed: true` together here; per
+ *  explicit follow-up, leaving an assignment (a LeftNav/UI action) must not
+ *  itself decide or invent that assignment's own status OR its read-only-
+ *  ness — both of those are governed entirely by what the agent actually
+ *  did (the status popover) before dismissing, not by the act of dismissing
+ *  itself. `customerId` is only set when `interaction.id` actually matches a
+ *  real `CREATE_NEW_CUSTOMERS` id shape (`"customer-N"`) — an interaction
+ *  started from an agent/team/skill/quick-dial/redial contact has no real
+ *  customer record behind it, and `ContactHistoryEntry.customerId`'s own doc
+ *  comment is specific about what this field means. */
+function buildDismissedContactHistoryEntry(interaction: ActiveInteraction, clockTick: number): ContactHistoryEntry {
+  const channelType = contactHistoryChannelType(interaction.channels.map((c) => c.type));
+  const primaryChannel = interaction.channels.find((c) => c.type === channelType) ?? interaction.channels[0];
+  const earliestStart =
+    interaction.channels.length > 0 ? Math.min(...interaction.channels.map((c) => c.startTick)) : clockTick;
+  const statusLabel = interaction.currentStatus ?? "Resolved";
+  return {
+    id: `dismissed-${interaction.id}-${Date.now()}`,
+    name: interaction.customerName ?? "Customer",
+    statusLabel,
+    statusVariant: SESSION_STATUS_TO_CONTACT_HISTORY_VARIANT[statusLabel] ?? "success",
+    redial: channelType === "voice",
+    description: primaryChannel?.preview
+      ? `${primaryChannel.preview} — ${statusLabel.toLowerCase()} and dismissed by agent`
+      : `${statusLabel} and dismissed by agent`,
+    caseId: interaction.recordId,
+    channelType,
+    channelLabel: CONTACT_HISTORY_CHANNEL_LABEL[channelType],
+    timeAgo: "Just now",
+    duration: formatElapsedTime(clockTick - earliestStart),
+    customerId: /^customer-\d+$/.test(interaction.id) ? interaction.id : undefined,
+  };
+}
 
 // Fixed customer indexes + content templates for the 5 extra rows that
 // appear once "Last 72 Hours" is selected (on top of "Last 48 Hours"'s own
@@ -1614,12 +1806,26 @@ const CONTACT_HISTORY_DATE_FILTER_OPTIONS: { value: ContactHistoryDateFilterValu
    bucket the way the old Today/Yesterday/Last 7 days setup was (selecting
    "Last 7 days" there dropped today's own rows entirely, which read as a
    bug once the range names started actually promising "the last N hours"
-   instead of a single day or a disjoint window). */
-const CONTACT_HISTORY_BY_RANGE: Record<ContactHistoryDateFilterValue, ContactHistoryEntry[]> = {
-  today: TODAY_CONTACT_HISTORY,
-  last48h: [...TODAY_CONTACT_HISTORY, ...CONTACT_HISTORY],
-  last72h: [...TODAY_CONTACT_HISTORY, ...CONTACT_HISTORY, ...EXTENDED_CONTACT_HISTORY],
-};
+   instead of a single day or a disjoint window).
+
+   "Today" is `dismissedContactHistory` (main component) — real, agent-
+   dismissed assignments (`buildDismissedContactHistoryEntry`), empty until
+   the agent actually dismisses one; there's no real backend here to have
+   loaded any actual prior-contact history from, so it starts genuinely
+   empty rather than pretending otherwise with hand-authored placeholder
+   rows the way it used to (a `TODAY_CONTACT_HISTORY` fixture, since
+   removed). A function, not a static object, so it can be recomputed as
+   that state grows — called from `AgentNextGenPage` inside a `useMemo`
+   keyed on `dismissedContactHistory`. */
+function buildContactHistoryByRange(
+  dismissedContactHistory: ContactHistoryEntry[]
+): Record<ContactHistoryDateFilterValue, ContactHistoryEntry[]> {
+  return {
+    today: dismissedContactHistory,
+    last48h: [...dismissedContactHistory, ...CONTACT_HISTORY],
+    last72h: [...dismissedContactHistory, ...CONTACT_HISTORY, ...EXTENDED_CONTACT_HISTORY],
+  };
+}
 
 /* Same trigger/popover chrome as `DateFilterChip` above (filterChipVariants
    "default" trigger, RadioGroup popover) but for `ContactHistoryDateFilterValue`
@@ -1679,10 +1885,26 @@ function ContactHistoryDateFilterChip({ onValueChange }: { onValueChange?: (valu
   );
 }
 
-function ContactHistoryCard({ onRedial }: { onRedial?: (entry: ContactHistoryEntry) => void }) {
+function ContactHistoryCard({
+  onRedial,
+  onReopen,
+  historyByRange,
+}: {
+  onRedial?: (entry: ContactHistoryEntry) => void;
+  /** Fired by clicking anywhere on a row OTHER than the "Redial" button
+   *  (which keeps its own distinct behavior — starting a fresh voice call,
+   *  not viewing this past interaction) — reopens it via
+   *  `handleReopenContactHistoryEntry` (main component). */
+  onReopen?: (entry: ContactHistoryEntry) => void;
+  /** Built by `buildContactHistoryByRange` (main component, via `useMemo`
+   *  keyed on `dismissedContactHistory`) — passed down rather than read
+   *  from a module-level constant, since "Today" is real, growing state
+   *  (see this card's own doc comment above), not a fixed fixture. */
+  historyByRange: Record<ContactHistoryDateFilterValue, ContactHistoryEntry[]>;
+}) {
   const [dateFilter, setDateFilter] = useState<ContactHistoryDateFilterValue>("today");
   const [searchQuery, setSearchQuery] = useState("");
-  const entries = CONTACT_HISTORY_BY_RANGE[dateFilter];
+  const entries = historyByRange[dateFilter];
 
   // Filters the already date-ranged `entries` down to whatever matches the
   // search box — name, case ID, channel, or the one-line case summary, so
@@ -1772,8 +1994,18 @@ function ContactHistoryCard({ onRedial }: { onRedial?: (entry: ContactHistoryEnt
             return (
               <div
                 key={entry.id}
+                role={onReopen ? "button" : undefined}
+                tabIndex={onReopen ? 0 : undefined}
+                onClick={() => onReopen?.(entry)}
+                onKeyDown={(e) => {
+                  if (onReopen && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    onReopen(entry);
+                  }
+                }}
                 className={cn(
                   "flex items-start justify-between gap-4 px-4 py-4 transition-colors hover:bg-lyra-state-hover",
+                  onReopen && "cursor-pointer",
                   i > 0 && "border-t border-lyra-border-subtle"
                 )}
               >
@@ -1791,7 +2023,20 @@ function ContactHistoryCard({ onRedial }: { onRedial?: (entry: ContactHistoryEnt
                       <span className="lyra-body-sm-emphasis text-lyra-fg-default">{entry.statusLabel}</span>
                     </span>
                     {entry.redial && (
-                      <Button variant="outline" size="sm" onClick={() => onRedial?.(entry)}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={(e) => {
+                          // Redial starts a fresh voice call (`handleRedial`)
+                          // — a distinct action from reopening this row to
+                          // view/continue the past interaction itself, which
+                          // is what the row's own `onClick` above does.
+                          // Without stopping propagation, clicking Redial
+                          // would fire both.
+                          e.stopPropagation();
+                          onRedial?.(entry);
+                        }}
+                      >
                         <PhoneOutgoing className="h-3.5 w-3.5" strokeWidth={1.5} />
                         Redial
                       </Button>
@@ -2036,7 +2281,16 @@ interface TranscriptMessage {
    separator between each and let every one collapse/expand independently.
    Two mock sessions here (a closed first contact, then a shorter follow-up)
    are enough to demonstrate the separator-per-session + sticky-stacking
-   behavior; still a UI prototype, not real per-interaction session data. */
+   behavior; still a UI prototype, not real per-interaction session data.
+   Session info (this separator + its Session Details panel) is shown for
+   every channel type — Voice/Email get their own sibling arrays just below
+   (`TRANSCRIPT_SESSIONS_VOICE`/`TRANSCRIPT_SESSIONS_EMAIL`), each with an
+   empty `messages: []` since neither channel has designed transcript
+   content yet (a call recording/summary UI, an email thread UI) — the
+   session separator and its expandable details still apply to a call or an
+   email the same as they do to a chat, it's only the message-by-message
+   body underneath that's still a placeholder. See `InteractionTranscript`'s
+   per-session render below for where that placeholder actually shows. */
 // Status → `Tag` variant for `TranscriptSessionSeparator`'s pill — a small,
 // local map rather than reusing `CUSTOMER_LATEST_INTERACTION_STATUS_POOL`
 // (Customer Information panel's own status pool): that one's a random-draw
@@ -2047,10 +2301,71 @@ interface TranscriptMessage {
 // elsewhere in this transcript (e.g. the applied message tags just above
 // the composer). Falls back to "neutral" for any future
 // `TranscriptSession.status` value not listed here, rather than throwing.
+// Now covers every status the session-status popover offers (see
+// `TRANSCRIPT_SESSION_STATUS_OPTIONS` just below) — "warning"/"info"/
+// "purple"/"success"/"critical" read as orange/blue/purple/green/red, the
+// same five hues that popover's own dot swatches use.
 const TRANSCRIPT_SESSION_STATUS_VARIANT: Record<string, TagVariant> = {
+  Open: "warning",
+  Pending: "info",
+  Escalated: "purple",
   Resolved: "success",
-  Open: "info",
+  Closed: "critical",
 };
+
+// The session-status popover's own row list (reference screenshot: a dot +
+// label per row, one highlighted as the current selection) — dot colors
+// mirror the exact same semantic mapping as `TRANSCRIPT_SESSION_STATUS_
+// VARIANT` above (so the chip and the popover's own "current" row always
+// agree), just resolved straight to the underlying CSS var instead of
+// through `Badge`'s circle-shape `variant` prop: that only exposes 6
+// semantic roles and has no true purple, so a plain inline-styled dot (same
+// small circle shape `Badge`'s own `dot` mode renders, just not routed
+// through the component) is what actually reaches "Escalated"'s purple in
+// the reference screenshot. Order matches the reference screenshot's own
+// row order (Open/Pending/Escalated/Resolved/Closed), not alphabetical.
+const TRANSCRIPT_SESSION_STATUS_OPTIONS: { label: string; dotColor: string }[] = [
+  { label: "Open", dotColor: "var(--lyra-color-status-warning-strong)" },
+  { label: "Pending", dotColor: "var(--lyra-color-status-info-strong)" },
+  { label: "Escalated", dotColor: "var(--lyra-color-accent-purple-strong)" },
+  { label: "Resolved", dotColor: "var(--lyra-color-status-success-strong)" },
+  { label: "Closed", dotColor: "var(--lyra-color-status-critical-strong)" },
+];
+
+/* ── Outcome popover mock data ──
+ * Option lists for the "Outcome" popover (`ChannelRow`'s own `outcome` prop,
+ * channel-row.tsx) — Disposition-code choices and the tag palette are
+ * business data, which is exactly why `ChannelRow` itself takes these as
+ * props instead of hardcoding them (see `ChannelOutcomeConfig`'s own doc
+ * comment). Kept as flat module-level consts, same as
+ * `TRANSCRIPT_SESSION_STATUS_OPTIONS` just above — none of these depend on
+ * component state/props.
+ *
+ * There's no separate `OUTCOME_RESOLUTION_OPTIONS` here anymore — the
+ * Outcome popover's "Resolution" field now reuses
+ * `TRANSCRIPT_SESSION_STATUS_OPTIONS` directly (wired below, in `channels`)
+ * so it shows the exact same Open/Pending/Escalated/Resolved/Closed
+ * colored-dot rows as the session-status pill's own dropdown, and both
+ * read/write the same `interaction.currentStatus` — changing status in
+ * either place changes it in both, per explicit request. */
+const OUTCOME_TAG_OPTIONS: TagPickerOption[] = [
+  { label: "Technical", variant: "info" },
+  { label: "Account", variant: "purple" },
+  { label: "Billing", variant: "warning" },
+  { label: "General Support", variant: "teal" },
+  { label: "VIP", variant: "critical" },
+];
+
+const OUTCOME_DISPOSITION_OPTIONS: SelectOption[] = [
+  { value: "Issue Resolved", label: "Issue Resolved" },
+  { value: "Follow-Up Required", label: "Follow-Up Required" },
+  { value: "Transferred", label: "Transferred" },
+  { value: "Customer Callback", label: "Customer Callback" },
+  { value: "No Resolution", label: "No Resolution" },
+];
+
+const OUTCOME_DEFAULT_SUMMARY =
+  "Interaction with davidbauerjr@gmail.com — customer concern reviewed and resolved. Agent provided clear guidance and confirmed next steps. Follow-up actions logged where applicable.";
 
 interface TranscriptSession {
   id: string;
@@ -2211,6 +2526,42 @@ const TRANSCRIPT_SESSIONS: TranscriptSession[] = [
   },
 ];
 
+// Voice's own session — see `TranscriptSession`'s own doc comment above for
+// why `messages` is empty here. One closed/"Resolved" session is enough to
+// show the separator + Session Details for a call, same as chat's own mock
+// log demonstrates it for SMS/WhatsApp.
+const TRANSCRIPT_SESSIONS_VOICE: TranscriptSession[] = [
+  {
+    id: "session-voice-1",
+    caseId: "CTX-20250718-04417",
+    date: "July 18, 2025",
+    startTime: "11:02 AM",
+    endTime: "11:19 AM",
+    channel: "Voice",
+    skill: "Voice Support",
+    agent: "John Smith",
+    status: "Resolved",
+    messages: [],
+  },
+];
+
+// Email's own session — same reasoning as `TRANSCRIPT_SESSIONS_VOICE` just
+// above.
+const TRANSCRIPT_SESSIONS_EMAIL: TranscriptSession[] = [
+  {
+    id: "session-email-1",
+    caseId: "CTX-20250719-05532",
+    date: "July 19, 2025",
+    startTime: "3:41 PM",
+    endTime: "3:58 PM",
+    channel: "Email",
+    skill: "Email Support",
+    agent: "John Smith",
+    status: "Resolved",
+    messages: [],
+  },
+];
+
 // Quick-add options offered from a message's hover "Tags" action — matches
 // the app's real tag vocabulary (Complain/Help/Praise/Share/Billing), not
 // an invented set, so a picked tag reads the same as the one seeded on m4.
@@ -2218,6 +2569,20 @@ const TRANSCRIPT_SESSIONS: TranscriptSession[] = [
 // variant "Share" already established for a non-sentiment tag. Deliberately
 // not purple/teal/pink — CONTRIBUTING.md reserves those three Tag variants
 // for channel-type coloring specifically.
+// Canned replies drawn from for the simulated customer response
+// `handleSendMessage` schedules after the agent sends a message — this demo
+// has no real customer on the other end, so a short, generic pool stands in
+// for one, same "randomly draw from a fixed pool" pattern already used for
+// synthesized Customer Information data (`CUSTOMER_LATEST_NOTE_POOL`, etc.).
+const CUSTOMER_AUTO_REPLY_POOL = [
+  "Thanks, got it!",
+  "Okay, that makes sense.",
+  "Appreciate the quick response.",
+  "Got it, thank you!",
+  "Sounds good, thanks for the help.",
+  "Perfect, that answers my question.",
+];
+
 const QUICK_TAG_OPTIONS: Omit<TranscriptTag, "id">[] = [
   { label: "Complain", variant: "critical" },
   { label: "Help", variant: "info" },
@@ -2284,16 +2649,28 @@ function TranscriptMessageBubble({
             {/* Copy / Add tag — hidden until the bubble row is hovered,
                 sitting just outside the bubble (right for customer bubbles,
                 left for agent bubbles), bottom-aligned with it rather than
-                overlapping it. */}
+                overlapping it. Bare icons, no surrounding toolbar chrome
+                (no border/bg/shadow container) — just the two
+                ActionIconButtons floating next to the bubble. The
+                TagPicker's own popover (the flyout for picking a tag) is
+                unaffected by this — only the outer wrapper around these two
+                icons lost its box styling. */}
             <div
               className={cn(
-                "mb-0.5 flex shrink-0 items-center gap-0.5 rounded-lyra-md border border-lyra-border-subtle bg-lyra-bg-surface-base p-0.5 opacity-0 shadow-sm transition-opacity group-hover:opacity-100",
+                // `pointer-events-none` while hidden — otherwise the
+                // invisible (opacity-0) ActionIconButtons underneath still
+                // receive hover/focus, so their Tooltip (Button's own
+                // `isIconVariant && title` wrap, tooltip.tsx) can pop open
+                // pointing at nothing whenever the cursor happens to pass
+                // over that dead space. `pointer-events-auto` restores
+                // interactivity once actually visible (hover or open).
+                "mb-0.5 flex shrink-0 items-center gap-0.5 pointer-events-none opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100",
                 // The "Add tag" popover renders in a portal, so moving the
                 // pointer into it isn't hovering this row anymore —
                 // group-hover alone would fade the toolbar out from under
-                // an open popover. Force it visible whenever this
-                // message's picker is open.
-                tagPickerOpen && "opacity-100"
+                // an open popover. Force it visible (and interactive)
+                // whenever this message's picker is open.
+                tagPickerOpen && "pointer-events-auto opacity-100"
               )}
             >
               <ActionIconButton size="sm" title="Copy message" onClick={onCopy}>
@@ -2305,7 +2682,9 @@ function TranscriptMessageBubble({
                   with custom content, not `Menu` — see tag-picker.tsx's own
                   doc comment for why forcing a row that's just a colored
                   pill through `Menu`'s icon+label+trailing template doesn't
-                  fit. */}
+                  fit. Its own popover flyout is untouched by the wrapper
+                  change above — only removed the box around the trigger
+                  icons, not the picker's own dropdown. */}
               <TagPicker
                 options={QUICK_TAG_OPTIONS}
                 appliedLabels={message.tags?.map((t) => t.label) ?? []}
@@ -2456,16 +2835,75 @@ function TranscriptSessionDetails({ session }: { session: TranscriptSession }) {
    pill button below drives that state directly and never touches Radix's
    own Trigger (not rendered here at all), so onValueChange is a no-op —
    it only exists to satisfy React's controlled-prop-without-a-change-
-   handler warning. */
+   handler warning.
+
+   The status `Tag` (e.g. "Resolved") used to be plain decoration inside
+   the same big toggle button as the rest of the pill. It's now its own
+   `Popover` trigger, pulled out of that button into a sibling — clicking
+   it opens a status list (`Menu`, `bare` since `Popover`'s own content
+   wrapper already supplies the surface) instead of toggling Session
+   Details, so the two actions (change status / expand details) don't
+   fight over one click target. Picking "Closed" swaps that same popover's
+   `content` to a confirm view instead of closing it (`statusMenuView`) —
+   one Popover instance, two possible bodies, not a second nested Popover —
+   matching the reference screenshots' "select Closed → a warning to
+   confirm" flow. Once a session's status IS "Closed", the trigger is
+   `disabled` (`isClosed` below): there's no way back in from here, matching
+   "closed cannot be re-opened." All the actual status state (which session
+   is "Closed" now, which popover/view is open) lives in
+   `InteractionTranscript` (this component owns no state of its own) —
+   same reasoning `sessionMessages`/`openSessionIds` already live one level
+   up: every session's status is independent, and only one status popover
+   should ever be open across the whole transcript at a time. */
 function TranscriptSessionSeparator({
   session,
   open,
   onToggle,
+  statusMenuOpen,
+  statusMenuView,
+  onStatusMenuOpenChange,
+  onSelectStatus,
+  onConfirmClose,
+  onCancelClose,
+  messageCount,
 }: {
   session: TranscriptSession;
   open: boolean;
   onToggle: () => void;
+  /** This session's own message (chat bubble) count — shown as "{n}
+   *  Messages | " right before "# caseId · date", same "Messages | #id"
+   *  format `ChannelTab`'s own tooltip line already uses (channel-row.tsx)
+   *  for the identical fact. Omit entirely (not `0`) for a channel with no
+   *  real per-message transcript to count — Voice/Email's sessions only
+   *  ever hold a placeholder `messages: []` (see `TRANSCRIPT_SESSIONS_VOICE`/
+   *  `_EMAIL`'s own doc comment), so "0 Messages" there would misreport a
+   *  call/email as an empty chat rather than just not applying. Only passed
+   *  for chat/SMS/WhatsApp (`InteractionTranscript`'s own call site checks
+   *  `channelType`), where `messages.length` is a real, meaningful count. */
+  messageCount?: number;
+  /** Whether THIS session's status popover is the one currently open —
+   *  `InteractionTranscript`'s `statusMenuOpenId` only ever names one
+   *  session at a time, same pattern as `tagPickerOpenId` for message tag
+   *  pickers. */
+  statusMenuOpen: boolean;
+  /** Which body the (currently open) popover shows: the Open/Pending/
+   *  Escalated/Resolved/Closed list, or the "Close Contact?" confirm.
+   *  Meaningless while `statusMenuOpen` is false. */
+  statusMenuView: "menu" | "confirm";
+  onStatusMenuOpenChange: (open: boolean) => void;
+  /** A non-"Closed" status was picked straight from the list — applies
+   *  immediately and closes the popover. Picking "Closed" itself doesn't
+   *  call this; see `onConfirmClose` below. */
+  onSelectStatus: (status: string) => void;
+  /** "Close" clicked on the confirm view — actually applies the "Closed"
+   *  status and closes the popover. */
+  onConfirmClose: () => void;
+  /** "Cancel" clicked on the confirm view — closes the popover without
+   *  changing anything (the status stays whatever it was before "Closed"
+   *  was picked from the list). */
+  onCancelClose: () => void;
 }) {
+  const isClosed = session.status === "Closed";
   return (
     <AccordionPrimitive.Root
       type="single"
@@ -2477,23 +2915,199 @@ function TranscriptSessionSeparator({
       <AccordionPrimitive.Item value={session.id}>
         <div className="flex items-center gap-3 py-2">
           <div className="h-px flex-1 bg-lyra-border-subtle" />
-          <Button
-            variant="ghost"
-            onClick={onToggle}
-            aria-expanded={open}
-            className="shrink-0 rounded-full border border-lyra-border-subtle px-3 py-1.5 lyra-body-sm text-lyra-fg-secondary"
-          >
-            <Tag label={session.status} variant={TRANSCRIPT_SESSION_STATUS_VARIANT[session.status] ?? "neutral"} />
-            <span aria-hidden="true">#</span>
-            <span>{session.caseId}</span>
-            <span aria-hidden="true">·</span>
-            <span>{session.date}</span>
-            {open ? (
-              <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
-            ) : (
-              <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
+          {/* The whole pill hovers as one unit — background change on
+              hover anywhere inside it (status tag, "# caseId · date", or
+              the empty space between them) — even though it routes clicks
+              to two different actions underneath (the status `Tag` opens
+              the status popover; everything else toggles Session Details).
+              Plain `hover:bg-*` directly on this wrapping div, no `group`
+              needed: the pointer is still over THIS div's box whenever it's
+              over either inner `Button`, since they're descendants of it,
+              so a bare `:hover` here already covers both without any
+              JS/group-hover wiring. The two inner `Button`s below get their
+              own default `ghost`-variant hover suppressed
+              (`hover:bg-transparent active:bg-transparent`) so only this
+              one background ever shows — otherwise a `Button`'s own hover
+              would additionally darken just the sub-region under the
+              cursor on top of this div's already-changed background,
+              reading as two overlapping, slightly different-toned patches
+              instead of one clean pill-wide hover. Gated on `!isClosed`:
+              nothing here is clickable anymore once locked (see
+              `isClosed`), so a hover reaction would be misleading. */}
+          <div
+            className={cn(
+              "shrink-0 flex items-center gap-1.5 rounded-full border border-lyra-border-subtle pl-1.5 pr-3 py-1.5 lyra-body-sm text-lyra-fg-secondary transition-colors",
+              !isClosed && "hover:bg-lyra-state-hover"
             )}
-          </Button>
+          >
+            <Popover
+              open={statusMenuOpen}
+              onOpenChange={onStatusMenuOpenChange}
+              placement="bottom"
+              align="start"
+              className="w-72"
+              // The menu view wants Menu's own full-bleed rows (no inset —
+              // `bare` already gives each row its own `p-1` breathing room);
+              // the confirm view wants the normal 20px `content` inset for
+              // its plain description paragraph. One Popover instance
+              // serves both bodies (see this component's own doc comment
+              // above), so `bodyPadding` just tracks whichever view is
+              // showing right now rather than being fixed to one value.
+              bodyPadding={statusMenuView === "confirm"}
+              // `header`/`footer` are real `Popover` slots (`PanelHeader`
+              // for the icon+title row, a plain button row for Close/
+              // Cancel) — only supplied for the confirm view; the menu view
+              // has neither, it's just `content`.
+              header={
+                statusMenuView === "confirm" ? (
+                  <PanelHeader
+                    title="Close Contact?"
+                    icon={
+                      <WarningIconSolid
+                        className="h-5 w-5 text-lyra-status-critical-strong"
+                        aria-hidden="true"
+                      />
+                    }
+                    bordered={false}
+                    className="px-5 pb-0"
+                  />
+                ) : undefined
+              }
+              footer={
+                statusMenuView === "confirm" ? (
+                  <div className="flex items-center justify-end gap-2 px-5 pb-4 pt-1">
+                    <Button variant="destructive" size="md" onClick={onConfirmClose}>
+                      Close
+                    </Button>
+                    <Button variant="outline" size="md" onClick={onCancelClose}>
+                      Cancel
+                    </Button>
+                  </div>
+                ) : undefined
+              }
+              content={
+                statusMenuView === "confirm" ? (
+                  <p className="pb-2 pt-1 lyra-body-md text-lyra-fg-secondary">
+                    Closing a contact cannot be undone. Are you sure you want to close this contact?
+                  </p>
+                ) : (
+                  <Menu
+                    bare
+                    items={TRANSCRIPT_SESSION_STATUS_OPTIONS.map((option) => ({
+                      id: option.label,
+                      label: option.label,
+                      active: option.label === session.status,
+                      icon: (
+                        <span
+                          aria-hidden="true"
+                          className="block h-2 w-2 rounded-full"
+                          style={{ backgroundColor: option.dotColor }}
+                        />
+                      ),
+                      onClick: () => onSelectStatus(option.label),
+                    }))}
+                  />
+                )
+              }
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={isClosed}
+                aria-haspopup="menu"
+                aria-expanded={statusMenuOpen}
+                // `hover:bg-transparent active:bg-transparent` overrides
+                // `ghost`'s own default hover/press background — the
+                // wrapping pill div now owns the one, whole-pill hover look
+                // (see that div's own comment); without this, this
+                // Button's own hover would additionally darken just the
+                // status-tag half of the pill on top of that.
+                className="h-auto shrink-0 rounded-full p-0 hover:bg-transparent active:bg-transparent disabled:opacity-100"
+              >
+                <Tag
+                  label={session.status}
+                  variant={TRANSCRIPT_SESSION_STATUS_VARIANT[session.status] ?? "neutral"}
+                  shape="pill"
+                  // The dropdown affordance lives INSIDE the pill, in the
+                  // same trailing slot `Tag`'s own remove-button ("×") uses
+                  // — `trailingIcon` (tag.tsx), not a sibling icon next to
+                  // the Tag, which is why `tag.tsx` gained that prop rather
+                  // than composing a second element here. Purely decorative
+                  // (no `onClick` of its own): the whole pill is already
+                  // this `Button`'s child, so a real nested button here
+                  // would be invalid HTML and steal the click. Dropped for
+                  // a Closed pill (see `isClosed`'s own doc comment) — once
+                  // locked, this isn't a dropdown trigger anymore, so
+                  // nothing here should suggest it still is. Rotates the
+                  // same way `Select`'s own chevron does (select.tsx) while
+                  // the popover is open, rather than a plain static glyph.
+                  trailingIcon={
+                    !isClosed && (
+                      <ChevronDown
+                        className={cn("transition-transform", statusMenuOpen && "rotate-180")}
+                        strokeWidth={1.5}
+                      />
+                    )
+                  }
+                />
+              </Button>
+            </Popover>
+            {/* "# caseId · date" + the expand/collapse chevron — only for a
+                session that isn't Closed. A Closed session's Session
+                Details can't be toggled anymore (same "locked" reasoning as
+                the status chip just above going `disabled`), so this
+                renders as plain, non-interactive text with no chevron
+                rather than a `Button` nothing would do anything useful. */}
+            {isClosed ? (
+              <span className="inline-flex shrink-0 items-center gap-1.5">
+                {messageCount != null && (
+                  <>
+                    <span>{messageCount} Message{messageCount === 1 ? "" : "s"}</span>
+                    <span aria-hidden="true">|</span>
+                  </>
+                )}
+                <span aria-hidden="true">#</span>
+                <span>{session.caseId}</span>
+                <span aria-hidden="true">·</span>
+                <span>{session.date}</span>
+              </span>
+            ) : (
+              // "View Details" — since this `Button` isn't an icon-shaped
+              // one (`variant="ghost"`, real visible text content), `Button`
+              // itself never wraps it in a tooltip on its own (that built-in
+              // behavior is `isIconVariant && title`-gated, see button.tsx —
+              // this doesn't qualify), so it's wrapped in a real `Tooltip`
+              // here explicitly instead of passing `title`.
+              <Tooltip content="View Details" placement="bottom">
+                <Button
+                  variant="ghost"
+                  onClick={onToggle}
+                  aria-expanded={open}
+                  // Same `hover:bg-transparent active:bg-transparent`
+                  // override as the status-tag `Button` above, and for the
+                  // same reason — the wrapping pill div owns the one,
+                  // whole-pill hover now.
+                  className="h-auto shrink-0 gap-1.5 p-0 hover:bg-transparent active:bg-transparent lyra-body-sm text-lyra-fg-secondary"
+                >
+                  {messageCount != null && (
+                    <>
+                      <span>{messageCount} Message{messageCount === 1 ? "" : "s"}</span>
+                      <span aria-hidden="true">|</span>
+                    </>
+                  )}
+                  <span aria-hidden="true">#</span>
+                  <span>{session.caseId}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{session.date}</span>
+                  {open ? (
+                    <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden="true" />
+                  )}
+                </Button>
+              </Tooltip>
+            )}
+          </div>
           <div className="h-px flex-1 bg-lyra-border-subtle" />
         </div>
         <AccordionPrimitive.Content className="overflow-hidden data-[state=open]:animate-accordion-down data-[state=closed]:animate-accordion-up">
@@ -2516,6 +3130,9 @@ function InteractionTranscript({
   recordId,
   skillLabel,
   isFreshLaunch,
+  liveMessages,
+  currentStatus,
+  onCurrentStatusChange,
 }: {
   /** Which channel's content to show — see this component's own doc
    *  comment above. Undefined (no active interaction/channel yet) renders
@@ -2534,13 +3151,113 @@ function InteractionTranscript({
   /** True only for an interaction whose card was just created this session
    *  (`ActiveInteraction.startedFresh` — see its own doc comment) — shows a
    *  single empty "Session Details" separator (today's date, no messages)
-   *  for SMS instead of the fixed mock chat log, since a brand-new SMS
-   *  interaction genuinely has no history yet. Has no effect for any other
-   *  channel — Voice/Email already show their own "Coming Soon" placeholder
-   *  regardless, and WhatsApp still shows the mock log even when fresh
-   *  (only SMS was requested). */
+   *  for Chat/SMS/WhatsApp instead of the fixed mock chat log, since a
+   *  brand-new text conversation genuinely has no history yet. Has no
+   *  effect for Voice/Email — those always show their own fixed session
+   *  (with its own placeholder "Coming Soon" body) regardless, since
+   *  there's no "pre-existing conversation" for either to wrongly show in
+   *  the first place. */
   isFreshLaunch: boolean;
+  /**
+   * Messages actually sent this session (`InteractionComposer`'s Send
+   * button) plus the simulated customer reply that follows — this
+   * interaction's own `ActiveInteraction.liveMessages`, passed straight
+   * through. Rendered after whatever the branches below otherwise show (the
+   * fixed mock log, or nothing yet for a fresh SMS launch), in its own
+   * trailing block — see the render return below. Tag state for these
+   * messages (`liveMessageTags`) is kept separate from `sessionMessages`
+   * (the mock log's own tag state) rather than merged into it: merging
+   * would mean re-deriving a stable `sessionMessages` entry from a prop
+   * that's a fresh `[]` reference on every render an interaction has no
+   * live messages yet, which'd need an effect just to keep in sync for no
+   * real benefit.
+   */
+  liveMessages: TranscriptMessage[];
+  /**
+   * The status last explicitly assigned (via the status popover) to this
+   * interaction's current/most-recent session — `ActiveInteraction.
+   * currentStatus`, passed straight through. Only ever applies to the LAST
+   * entry in `sessionsToRender` below (the "current" session — the
+   * freshly-launched synthetic one, the shared mock log's follow-up
+   * session, or Voice/Email's single session); every earlier/historical
+   * session still uses its own local `sessionStatusOverrides` state. See
+   * `ActiveInteraction.currentStatus`'s own doc comment for why this one
+   * piece of status specifically has to live up on `ActiveInteraction`
+   * rather than purely in this component's own state.
+   */
+  currentStatus?: string;
+  /** Fires whenever the agent changes the CURRENT session's status via the
+   *  popover (a plain pick, or confirming "Close") — writes back onto
+   *  `ActiveInteraction.currentStatus` (`handleInteractionStatusChange`,
+   *  main component). Never fires for a status change on any earlier/
+   *  historical session — those stay local to this component (see
+   *  `currentStatus` above). */
+  onCurrentStatusChange: (status: string) => void;
 }) {
+  // A freshly-launched Chat/SMS/WhatsApp interaction (see `isFreshLaunch`'s
+  // own doc comment) shows just a single synthesized "Session Details"
+  // separator (today's date, this interaction's own recordId/skill) with no
+  // mock messages under it — a brand-new outbound conversation genuinely
+  // has no history yet — in place of the fixed `TRANSCRIPT_SESSIONS` log.
+  // Originally only SMS got this (per an earlier, narrower request); Chat/
+  // WhatsApp fell through to the shared mock log even when freshly
+  // launched, which is exactly the "brand-new WhatsApp shows a full,
+  // pre-existing conversation" bug reported from a screenshot of a New
+  // Outbound WhatsApp launch — every one of the three text-transcript
+  // channel types has the same "no history yet" reality for a brand-new
+  // outbound, so this now covers all three, not just SMS. Voice/Email are
+  // deliberately NOT included here: they always render their own fixed
+  // `TRANSCRIPT_SESSIONS_VOICE`/`_EMAIL` session (a placeholder body, not a
+  // real conversation log) regardless of `isFreshLaunch` — there's no
+  // "pre-existing conversation" for a call/email to wrongly show in the
+  // first place. Either way, `liveMessages` (real, sent-this-visit
+  // messages) renders in its own trailing block right after whichever of
+  // the two this resolves to — see the render return below.
+  //
+  // Computed up here, before any hooks below, purely so `sessionsToRender`
+  // (specifically its LAST entry's id) is available to `getSessionStatus`/
+  // `selectSessionStatus`/`handleConfirmCloseSession` further down without
+  // reordering those — this is a plain computation from props, not a hook
+  // itself, so moving it earlier doesn't affect hook call order/count.
+  const isTextChannel = channelType === "chat" || channelType === "sms" || channelType === "whatsapp";
+  const isFreshTextLaunch = isTextChannel && isFreshLaunch;
+  const now = new Date();
+  // The synthesized fresh session's own "Channel" field (Session Details'
+  // Contact ID/Date/.../Channel/Skill row) should read as whichever of the
+  // three text channels was actually launched, not a hardcoded "SMS" now
+  // that this also covers Chat/WhatsApp.
+  const freshSessionChannelLabel =
+    channelType === "whatsapp" ? "WhatsApp" : channelType === "chat" ? "Chat" : "SMS";
+  // Voice/Email get their own session arrays (see `TRANSCRIPT_SESSIONS_VOICE`/
+  // `TRANSCRIPT_SESSIONS_EMAIL`'s own doc comments) rather than falling
+  // through to chat's `TRANSCRIPT_SESSIONS` — every channel type shows
+  // session info, but a call or an email shouldn't be mislabeled "SMS" in
+  // its own Session Details panel just because it fell into the same
+  // default branch.
+  const sessionsToRender: TranscriptSession[] = isFreshTextLaunch
+    ? [
+        {
+          id: "session-fresh",
+          caseId: recordId,
+          date: now.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }),
+          startTime: now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }),
+          endTime: "—",
+          channel: freshSessionChannelLabel,
+          skill: skillLabel ?? "—",
+          agent: `${CURRENT_AGENT_FIRST_NAME} ${CURRENT_AGENT_LAST_NAME}`,
+          status: "Open",
+          messages: [],
+        },
+      ]
+    : channelType === "voice"
+    ? TRANSCRIPT_SESSIONS_VOICE
+    : channelType === "email"
+    ? TRANSCRIPT_SESSIONS_EMAIL
+    : TRANSCRIPT_SESSIONS;
+  // The "current" session for status purposes — see `currentStatus`/
+  // `onCurrentStatusChange`'s own doc comments above.
+  const lastSessionId = sessionsToRender[sessionsToRender.length - 1]?.id;
+
   // Local, per-session tag state — removing/adding a tag on one message
   // shouldn't touch any other message's tags (in this session or any
   // other), so this is keyed by session id rather than one flat array.
@@ -2564,6 +3281,82 @@ function InteractionTranscript({
       else next.add(sessionId);
       return next;
     });
+  };
+
+  // Per-session status, overriding whatever `TranscriptSession.status` the
+  // static session data (`TRANSCRIPT_SESSIONS`/`_VOICE`/`_EMAIL`, or the
+  // synthesized fresh-SMS session) started with — same "state lives here,
+  // not in the static array" pattern as `sessionMessages` above. Keyed by
+  // session id rather than nested under anything channel-specific since ids
+  // are already unique across every session source.
+  //
+  // Only covers earlier/historical sessions now, NOT the current one
+  // (`lastSessionId`) — that one's status is `currentStatus`, a prop from
+  // `ActiveInteraction` (see its own doc comment for why), not local state
+  // here. `getSessionStatus` picks whichever source applies per session,
+  // falling back to that session's own built-in `status` until either kind
+  // of override exists for it.
+  const [sessionStatusOverrides, setSessionStatusOverrides] = useState<Record<string, string>>({});
+  const getSessionStatus = (session: TranscriptSession) =>
+    session.id === lastSessionId ? currentStatus ?? session.status : sessionStatusOverrides[session.id] ?? session.status;
+
+  // Which session's status popover is open, and which of that popover's two
+  // bodies (the status list, or the "Close Contact?" confirm) it's
+  // currently showing — see `TranscriptSessionSeparator`'s own doc comment
+  // for why this is one Popover with a swappable body rather than two. At
+  // most one open across the whole transcript at a time, same pattern as
+  // `tagPickerOpenId` above.
+  const [statusMenuOpenId, setStatusMenuOpenId] = useState<string | null>(null);
+  const [statusMenuView, setStatusMenuView] = useState<"menu" | "confirm">("menu");
+
+  // Opening (or re-opening) a session's status popover always starts on the
+  // list view, never stranded on a stale "confirm" from a previous visit —
+  // `onStatusMenuOpenChange(false)` (outside click, Escape, re-clicking the
+  // trigger) resets both pieces of state so the next open is always fresh.
+  const handleStatusMenuOpenChange = (sessionId: string, open: boolean) => {
+    if (open) {
+      setStatusMenuView("menu");
+      setStatusMenuOpenId(sessionId);
+    } else {
+      setStatusMenuOpenId(null);
+      setStatusMenuView("menu");
+    }
+  };
+
+  // A non-"Closed" status picked straight from the list — applies right
+  // away and closes the popover. "Closed" itself is deliberately not
+  // handled here; see `handleConfirmCloseSession` below for why that one
+  // status needs a confirm step first. Routes to `onCurrentStatusChange`
+  // (up onto `ActiveInteraction`) for the current session specifically, or
+  // local `sessionStatusOverrides` for any other (historical) session — see
+  // `getSessionStatus`'s own comment for why these are two different
+  // sources.
+  const selectSessionStatus = (sessionId: string, status: string) => {
+    if (status === "Closed") {
+      setStatusMenuView("confirm");
+      return;
+    }
+    if (sessionId === lastSessionId) {
+      onCurrentStatusChange(status);
+    } else {
+      setSessionStatusOverrides((prev) => ({ ...prev, [sessionId]: status }));
+    }
+    setStatusMenuOpenId(null);
+  };
+
+  const handleConfirmCloseSession = (sessionId: string) => {
+    if (sessionId === lastSessionId) {
+      onCurrentStatusChange("Closed");
+    } else {
+      setSessionStatusOverrides((prev) => ({ ...prev, [sessionId]: "Closed" }));
+    }
+    setStatusMenuOpenId(null);
+    setStatusMenuView("menu");
+  };
+
+  const handleCancelCloseSession = () => {
+    setStatusMenuOpenId(null);
+    setStatusMenuView("menu");
   };
 
   const removeTag = (sessionId: string, messageId: string, tagId: string) => {
@@ -2600,6 +3393,31 @@ function InteractionTranscript({
     navigator.clipboard?.writeText(text).catch(() => {});
   };
 
+  // Tag state for `liveMessages` (sent/received messages, not the fixed mock
+  // log) — kept separate from `sessionMessages` above; see `liveMessages`
+  // prop's own doc comment for why. Keyed by message id, same shape as
+  // `sessionMessages`' per-message tags, just not nested under a session id
+  // since there's only ever one flat live list, not several sessions' worth.
+  const [liveMessageTags, setLiveMessageTags] = useState<Record<string, TranscriptTag[]>>({});
+
+  const addLiveTag = (messageId: string, option: Omit<TranscriptTag, "id">) => {
+    setLiveMessageTags((prev) => ({
+      ...prev,
+      [messageId]: [...(prev[messageId] ?? []), { ...option, id: `${messageId}-${option.label.toLowerCase()}` }],
+    }));
+  };
+
+  const removeLiveTag = (messageId: string, tagId: string) => {
+    setLiveMessageTags((prev) => ({
+      ...prev,
+      [messageId]: (prev[messageId] ?? []).filter((t) => t.id !== tagId),
+    }));
+  };
+
+  const clearLiveTags = (messageId: string) => {
+    setLiveMessageTags((prev) => ({ ...prev, [messageId]: [] }));
+  };
+
   // Scroll to the latest message on open — every SMS/chat transcript should
   // land on the newest message (bottom of the last session) rather than the
   // very first one from potentially days ago. `useLayoutEffect` (not
@@ -2621,8 +3439,8 @@ function InteractionTranscript({
   // since the "N new" chip is a single count regardless of which session(s)
   // the new messages landed in.
   const totalMessageCount = useMemo(
-    () => Object.values(sessionMessages).reduce((sum, messages) => sum + messages.length, 0),
-    [sessionMessages]
+    () => Object.values(sessionMessages).reduce((sum, messages) => sum + messages.length, 0) + liveMessages.length,
+    [sessionMessages, liveMessages]
   );
 
   // Whether the agent is currently scrolled to (near) the bottom — drives
@@ -2635,6 +3453,14 @@ function InteractionTranscript({
   // at the bottom — a ref (not state) since it's only ever read inside
   // effects/handlers, never rendered directly.
   const lastSeenCountRef = useRef(totalMessageCount);
+  // Mirrors `isAtBottom` into a ref purely so the auto-scroll effect below
+  // can read its *current* value without listing it as a dependency — see
+  // that effect's own comment for why it deliberately only re-fires on
+  // `totalMessageCount` changing, not on every `isAtBottom` flip.
+  const isAtBottomRef = useRef(isAtBottom);
+  useEffect(() => {
+    isAtBottomRef.current = isAtBottom;
+  }, [isAtBottom]);
 
   const BOTTOM_THRESHOLD_PX = 24;
   const handleTranscriptScroll = () => {
@@ -2657,65 +3483,45 @@ function InteractionTranscript({
     }
   }, [totalMessageCount, isAtBottom]);
 
+  // Auto-scroll to the newest message as new ones arrive (a sent message, or
+  // the simulated customer reply that follows it a couple seconds later).
+  // Two different rules for the two cases:
+  //  - The agent's OWN just-sent message always scrolls to it, regardless of
+  //    where they'd scrolled to — they just took an action in this
+  //    conversation, so they should see it land, same as `scrollToLatest`
+  //    below. Also resets `isAtBottom` to `true` (as if they'd clicked
+  //    "Scroll To Latest" themselves), so the customer's reply a couple
+  //    seconds later keeps auto-scrolling right along with it too.
+  //  - The simulated customer reply only scrolls if the agent was already
+  //    caught up to the bottom (`isAtBottomRef.current`, read fresh rather
+  //    than depended on — see that ref's own comment) — if they've scrolled
+  //    up to read earlier messages, an incoming reply shouldn't yank them
+  //    back down; it only self-resumes once they scroll back down
+  //    themselves (`handleTranscriptScroll`) or click "Scroll To Latest".
+  // Distinguished by `liveMessages`' own last entry's `sender` — the fixed
+  // mock log never changes at runtime, so any growth in `liveMessages` is
+  // exactly "the agent sent one" or "the customer replied," in that order.
+  // Keyed on `liveMessages.length` (a primitive), not the `liveMessages`
+  // array itself — that's a fresh `[]` reference every render an
+  // interaction has no live messages yet (`activeInteraction.liveMessages
+  // ?? []` at the call site), which would otherwise re-fire this effect on
+  // every unrelated re-render (e.g. the shared clock tick).
+  useEffect(() => {
+    const lastLiveMessage = liveMessages[liveMessages.length - 1];
+    const isOwnJustSentMessage = lastLiveMessage?.sender === "agent";
+    if (!isOwnJustSentMessage && !isAtBottomRef.current) return;
+    const el = scrollContainerRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    if (isOwnJustSentMessage) setIsAtBottom(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveMessages.length]);
+
   const scrollToLatest = () => {
     const el = scrollContainerRef.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     setIsAtBottom(true);
   };
-
-  // Voice/Email have no designed transcript content yet — a plain
-  // placeholder rather than the SMS/WhatsApp mock chat log underneath,
-  // which would misrepresent a call/email thread as a chat conversation
-  // (see this component's own doc comment above). Returned before the
-  // chat-shaped markup below, not a conditional wrapped around it — every
-  // hook above still runs unconditionally either way, only the rendered
-  // output branches.
-  if (channelType === "voice" || channelType === "email") {
-    return (
-      <div className="flex flex-1 min-h-0 items-center justify-center">
-        <p className="lyra-body-md text-lyra-fg-secondary">
-          Coming Soon {channelType === "voice" ? "Voice" : "Email"} Content
-        </p>
-      </div>
-    );
-  }
-
-  // A freshly-launched SMS interaction (see `isFreshLaunch`'s own doc
-  // comment) — just the "Session Details" separator, synthesized from this
-  // interaction's own recordId/skill and today's real date/time, with no
-  // messages under it and no "Scroll To Latest" affordance (nothing to
-  // scroll to yet). Returned before the mock-log branch below, not folded
-  // into it — this is a single synthetic session, not a filtered view of
-  // `TRANSCRIPT_SESSIONS`, so it doesn't touch `sessionMessages` at all.
-  if (channelType === "sms" && isFreshLaunch) {
-    const now = new Date();
-    const freshSession: TranscriptSession = {
-      id: "session-fresh",
-      caseId: recordId,
-      date: now.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }),
-      startTime: now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }),
-      endTime: "—",
-      channel: "SMS",
-      skill: skillLabel ?? "—",
-      agent: `${CURRENT_AGENT_FIRST_NAME} ${CURRENT_AGENT_LAST_NAME}`,
-      status: "Open",
-      messages: [],
-    };
-    return (
-      <div className="relative flex-1 min-h-0">
-        <div className="h-full overflow-y-auto">
-          <div className="w-full max-w-[1200px] mx-auto px-6 py-4 lyra-transcript-wrap">
-            <TranscriptSessionSeparator
-              session={freshSession}
-              open={openSessionIds.has(freshSession.id)}
-              onToggle={() => toggleSession(freshSession.id)}
-            />
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   // SMS/WhatsApp (and no active channel yet) — the existing mock chat log,
   // with every customer-sender message's hardcoded mock name/initials
@@ -2734,33 +3540,109 @@ function InteractionTranscript({
         className="h-full overflow-y-auto"
       >
         <div className="w-full max-w-[1200px] mx-auto px-6 py-4 lyra-transcript-wrap">
-          {TRANSCRIPT_SESSIONS.map((session) => (
-            <div key={session.id} className="flex flex-col">
-              <TranscriptSessionSeparator
-                session={session}
-                open={openSessionIds.has(session.id)}
-                onToggle={() => toggleSession(session.id)}
-              />
-              <div className="flex flex-col gap-5 py-4">
-                {sessionMessages[session.id].map((message) => (
-                  <TranscriptMessageBubble
-                    key={message.id}
-                    message={
-                      message.sender === "customer"
-                        ? { ...message, name: displayName, initials: displayInitials }
-                        : message
-                    }
-                    tagPickerOpen={tagPickerOpenId === message.id}
-                    onTagPickerOpenChange={(open) => setTagPickerOpenId(open ? message.id : null)}
-                    onAddTag={(option) => addTag(session.id, message.id, option)}
-                    onRemoveTag={(tagId) => removeTag(session.id, message.id, tagId)}
-                    onClearTags={() => clearTags(session.id, message.id)}
-                    onCopy={() => copyMessage(message.text)}
-                  />
-                ))}
+          {sessionsToRender.map((session) => {
+            // Falls back to `[]` for the synthetic "just launched" session
+            // (not seeded into `sessionMessages` at mount, since it isn't
+            // part of the fixed `TRANSCRIPT_SESSIONS` array that seeds that
+            // state) — genuinely empty there, not a bug.
+            const messages = sessionMessages[session.id] ?? [];
+            // Patches this session's own current status (which may have
+            // been changed via the status popover) onto the otherwise-
+            // static session object — `TranscriptSessionSeparator`'s chip
+            // and `TranscriptSessionDetails`' "Status" row both read
+            // straight off `session.status`, so this one patch keeps both
+            // in sync without either needing a separate status prop.
+            const sessionWithCurrentStatus: TranscriptSession = {
+              ...session,
+              status: getSessionStatus(session),
+            };
+            return (
+              <div key={session.id} className="flex flex-col">
+                <TranscriptSessionSeparator
+                  session={sessionWithCurrentStatus}
+                  open={openSessionIds.has(session.id)}
+                  onToggle={() => toggleSession(session.id)}
+                  // Only a real, meaningful count for chat/SMS/WhatsApp —
+                  // see this prop's own doc comment on `TranscriptSession
+                  // Separator` for why Voice/Email (`messages: []`
+                  // placeholders) are left `undefined` instead of `0`.
+                  messageCount={isTextChannel ? messages.length : undefined}
+                  statusMenuOpen={statusMenuOpenId === session.id}
+                  statusMenuView={statusMenuView}
+                  onStatusMenuOpenChange={(nextOpen) => handleStatusMenuOpenChange(session.id, nextOpen)}
+                  onSelectStatus={(status) => selectSessionStatus(session.id, status)}
+                  onConfirmClose={() => handleConfirmCloseSession(session.id)}
+                  onCancelClose={handleCancelCloseSession}
+                />
+                {messages.length > 0 && (
+                  <div className="flex flex-col gap-5 py-4">
+                    {messages.map((message) => (
+                      <TranscriptMessageBubble
+                        key={message.id}
+                        message={
+                          message.sender === "customer"
+                            ? { ...message, name: displayName, initials: displayInitials }
+                            : message
+                        }
+                        tagPickerOpen={tagPickerOpenId === message.id}
+                        onTagPickerOpenChange={(open) => setTagPickerOpenId(open ? message.id : null)}
+                        onAddTag={(option) => addTag(session.id, message.id, option)}
+                        onRemoveTag={(tagId) => removeTag(session.id, message.id, tagId)}
+                        onClearTags={() => clearTags(session.id, message.id)}
+                        onCopy={() => copyMessage(message.text)}
+                      />
+                    ))}
+                  </div>
+                )}
+                {/* Voice/Email have no designed message-by-message transcript
+                    content yet (a call recording/summary UI, an email thread
+                    UI) — a plain placeholder stands in for it under this
+                    session's own separator, same as before this session
+                    info was added for these two channels, just no longer
+                    replacing the separator/Session Details too (see
+                    `TRANSCRIPT_SESSIONS_VOICE`/`TRANSCRIPT_SESSIONS_EMAIL`'s
+                    own doc comments). Keyed off `messages.length === 0`
+                    rather than unconditionally for these channel types so a
+                    future session that *does* get real messages seeded onto
+                    it (e.g. once voice/email transcripts are designed) stops
+                    showing this the moment it has any. */}
+                {messages.length === 0 && (channelType === "voice" || channelType === "email") && (
+                  <div className="flex items-center justify-center py-12">
+                    <p className="lyra-body-md text-lyra-fg-secondary">
+                      Coming Soon {channelType === "voice" ? "Voice" : "Email"} Content
+                    </p>
+                  </div>
+                )}
               </div>
+            );
+          })}
+          {/* Live messages — this interaction's own sent/received messages
+              (see `ActiveInteraction.liveMessages`'s own doc comment),
+              appended after whichever of the two branches above rendered:
+              the fixed mock log's last session, or the fresh-launch
+              session's empty slate. No separator of its own — it's a
+              continuation of the same open conversation, not a new
+              session. */}
+          {liveMessages.length > 0 && (
+            <div className="flex flex-col gap-5 py-4">
+              {liveMessages.map((message) => (
+                <TranscriptMessageBubble
+                  key={message.id}
+                  message={{
+                    ...message,
+                    ...(message.sender === "customer" ? { name: displayName, initials: displayInitials } : {}),
+                    tags: liveMessageTags[message.id] ?? message.tags,
+                  }}
+                  tagPickerOpen={tagPickerOpenId === message.id}
+                  onTagPickerOpenChange={(open) => setTagPickerOpenId(open ? message.id : null)}
+                  onAddTag={(option) => addLiveTag(message.id, option)}
+                  onRemoveTag={(tagId) => removeLiveTag(message.id, tagId)}
+                  onClearTags={() => clearLiveTags(message.id)}
+                  onCopy={() => copyMessage(message.text)}
+                />
+              ))}
             </div>
-          ))}
+          )}
         </div>
       </div>
       {!isAtBottom && (
@@ -2797,16 +3679,22 @@ function InteractionTranscript({
    built from two adjacent `Button`s (rounded-r-none / rounded-l-none, a
    hairline divider between) since lyra-ui has no dedicated split-button
    component; same reasoning as everywhere else in this file that composes
-   existing atoms rather than waiting on a new lyra-ui primitive. */
-function InteractionComposer() {
+   existing atoms rather than waiting on a new lyra-ui primitive.
+
+   `onSend` (new) hands the typed text up to `handleSendMessage` (the main
+   component, where `interactions`/`setInteractions` actually live — this
+   component has no access to that state itself) — that's what pushes the
+   message into the active interaction's `liveMessages` and schedules the
+   simulated customer reply. This component still owns nothing but the
+   input's own text; it doesn't know or care what happens to a message once
+   sent. */
+function InteractionComposer({ onSend }: { onSend: (text: string) => void }) {
   const [message, setMessage] = useState("");
   const canSend = message.trim().length > 0;
 
   const handleSend = () => {
     if (!canSend) return;
-    // No real send pipeline yet (the transcript above is fixed mock data,
-    // not a live conversation) — clearing the field is the one honest
-    // "sent" signal available without pretending this posts anywhere.
+    onSend(message);
     setMessage("");
   };
 
@@ -3802,6 +4690,7 @@ function CustomerInformationInteriorPanel({
   width,
   onWidthChange,
   exitFullScreenSignal,
+  onOverlayModeChange,
 }: {
   open: boolean;
   onClose: () => void;
@@ -3820,6 +4709,12 @@ function CustomerInformationInteriorPanel({
    *  Information panel would keep covering the newly-opened interaction's
    *  transcript. */
   exitFullScreenSignal?: number;
+  /** Forwarded straight to `InteriorPanel`'s own `onOverlayModeChange` prop
+   *  (see its doc comment in interior-panel.tsx) — lets the main component
+   *  track whether this panel is currently floating over the interaction
+   *  body (narrow container or full screen) instead of docked beside it,
+   *  so it knows when clicking that body should close the panel. */
+  onOverlayModeChange?: (isOverlay: boolean) => void;
 }) {
   const [activeTab, setActiveTab] = useState(0);
   const fields = useMemo(
@@ -3874,6 +4769,7 @@ function CustomerInformationInteriorPanel({
       width={width}
       onWidthChange={onWidthChange}
       exitFullScreenSignal={exitFullScreenSignal}
+      onOverlayModeChange={onOverlayModeChange}
     >
       <CustomerInformationPanelBody
         activeTab={activeTab}
@@ -3952,6 +4848,54 @@ export function AgentNextGenPage({
   // callers that want to start already mid-call.
   const [interactions, setInteractions] = useState<ActiveInteraction[]>(
     () => (initialInteraction ? [initialInteraction] : [])
+  );
+  // Real "Today" Contact History rows — starts empty (nothing to show on
+  // login, there's no backend here to have loaded anything from) and grows
+  // as the agent actually dismisses whole assignments (`handleDismissInteraction`
+  // below, via `buildDismissedContactHistoryEntry`) — see `ContactHistoryCard`'s
+  // own doc comment for the full picture.
+  const [dismissedContactHistory, setDismissedContactHistory] = useState<ContactHistoryEntry[]>([]);
+  // "Outcome" popover (`ChannelRow`'s own `outcome` prop, channel-row.tsx) —
+  // logs Resolution/Tags/Disposition code/Summary for whichever channel's
+  // Outcome button was clicked. Only one can be open across the entire left
+  // nav at a time, same "one popover at a time" convention the session-
+  // status popover already uses (`statusMenuOpenId`) — identified by
+  // `${interactionId}:${channelKey}` since a channel's own `id`/`type` alone
+  // isn't unique across DIFFERENT interactions, only within one card.
+  // Note: no `resolution` field here — unlike Tags/Disposition/Summary
+  // (which really are per-draft scratch state with no backend to persist
+  // to), Resolution now reads/writes `interaction.currentStatus` directly
+  // (see `channels` below), the same already-lifted piece of state the
+  // session-status pill itself reads/writes via `handleInteractionStatusChange`
+  // — so there's nothing left for a local draft to own for that field.
+  const [outcomeDraftKey, setOutcomeDraftKey] = useState<string | null>(null);
+  const buildDefaultOutcomeDraft = () => ({
+    tags: ["Technical", "Account"],
+    dispositionCode: OUTCOME_DISPOSITION_OPTIONS[0].value,
+    summary: OUTCOME_DEFAULT_SUMMARY,
+  });
+  const [outcomeDraft, setOutcomeDraft] = useState(buildDefaultOutcomeDraft);
+  const handleOutcomeOpenChange = (key: string, open: boolean) => {
+    if (open) {
+      // Reset to a fresh draft every time a (possibly different) channel's
+      // popover opens — no real backend here to load a previously-saved
+      // outcome from, so every open starts from the same plausible example
+      // rather than carrying over whatever the last channel's draft had.
+      setOutcomeDraft(buildDefaultOutcomeDraft());
+      setOutcomeDraftKey(key);
+    } else if (outcomeDraftKey === key) {
+      setOutcomeDraftKey(null);
+    }
+  };
+  // "Approve & Save"/"Cancel" both just close the popover — there's no real
+  // backend here to persist an outcome to, same no-op placeholder state
+  // every other not-yet-wired action in this file starts from (e.g. Consult
+  // / Transfer — see rule #30's own note in CLAUDE.md).
+  const handleOutcomeSave = () => setOutcomeDraftKey(null);
+  const handleOutcomeCancel = () => setOutcomeDraftKey(null);
+  const contactHistoryByRange = useMemo(
+    () => buildContactHistoryByRange(dismissedContactHistory),
+    [dismissedContactHistory]
   );
   // Drives `AssignmentsSortButton`'s `RadioGroup` — "Last Updated" (default,
   // matching a typical inbox's own default order) or "Start Date". Actual
@@ -4224,6 +5168,15 @@ export function AgentNextGenPage({
   // each bump works, since `InteriorPanel` only compares it against its own
   // previous render, not this value's own meaning.
   const [customerPanelExitFullScreenSignal, setCustomerPanelExitFullScreenSignal] = useState(0);
+  // Reported by `InteriorPanel`'s own `onOverlayModeChange` (forwarded
+  // through `CustomerInformationInteriorPanel`) — true whenever this panel
+  // is currently floating over the interaction body (narrow container or
+  // full screen) instead of docked beside it. Drives closing the panel when
+  // the agent clicks that body (see the interaction body column's own
+  // `onClick` below) — a docked, side-by-side panel isn't overlapping
+  // anything, so clicking the transcript/composer there has no reason to
+  // close it; only the overlay case behaves like a dismissible scrim.
+  const [customerPanelIsOverlay, setCustomerPanelIsOverlay] = useState(false);
 
   // The Customer Information panel belongs to the interaction it was opened
   // from — its only trigger is the toggle button on the interaction
@@ -4471,6 +5424,82 @@ export function AgentNextGenPage({
     setCustomerPanelExitFullScreenSignal((n) => n + 1);
   };
 
+  /** Fired by clicking a Contact History row itself (`ContactHistoryCard`'s
+   *  new `onReopen` prop — distinct from that same row's "Redial" button,
+   *  which still starts a fresh voice call via `handleRedial` above; the
+   *  row click below reopens THIS past interaction to view/continue it).
+   *  Builds a single channel matching `entry.channelType` — "voice"/"chat"/
+   *  "email" are already valid `ChannelType` values (Contact History's own
+   *  narrower grouping is a subset, not a separate vocabulary needing
+   *  translation) — and reuses the same replace-or-add-by-id logic
+   *  `handleRedial` uses, so reopening a row for a customer who already has
+   *  a card open just refreshes that card's channel instead of creating a
+   *  second one. `startedFresh` is deliberately left unset either way —
+   *  reopening should show the existing (shared mock) conversation, not an
+   *  empty "just launched" slate.
+   *
+   *  `closed` (from `entry.closed` — see its own doc comment) is the one
+   *  thing that changes what the reopened card can do: carried straight
+   *  onto `ActiveInteraction.closed`, which the render layer below reads to
+   *  show a "viewing a closed interaction" banner, hide the composer, and
+   *  hide every channel's kebab (no status change) instead of behaving like
+   *  a normal, reply-able assignment.
+   *
+   *  `entry.statusLabel` is carried straight onto `ActiveInteraction.
+   *  currentStatus` too — per explicit request, reopening a row should pick
+   *  its current session back up AT the status it was last logged with
+   *  (whatever `buildDismissedContactHistoryEntry` captured, or whatever a
+   *  hand-authored `CONTACT_HISTORY`/`EXTENDED_CONTACT_HISTORY` row already
+   *  says), not reset to `TRANSCRIPT_SESSIONS`/`_VOICE`/`_EMAIL`'s own
+   *  hardcoded default status for that session. This is independent of
+   *  `closed` above: a row can be reopened at, say, "Escalated" and still be
+   *  fully reply-able (most rows), or reopened at "Closed" specifically —
+   *  its own status, not the separate read-only-viewing flag — and still
+   *  only go fully read-only if `entry.closed` also happens to be true. */
+  const handleReopenContactHistoryEntry = (entry: ContactHistoryEntry) => {
+    const id = entry.customerId ?? `history:${entry.id}`;
+    const isNewInteraction = !interactions.some((i) => i.id === id);
+    const newChannel: TrackedChannel = {
+      id: entry.channelType,
+      type: entry.channelType,
+      startTick: clockTick,
+      interactionId: generateInteractionId(),
+    };
+    setInteractions((prev) => {
+      const idx = prev.findIndex((i) => i.id === id);
+      if (idx === -1) {
+        return [
+          ...prev,
+          {
+            id,
+            customerName: entry.name,
+            recordId: entry.caseId,
+            channels: [newChannel],
+            currentChannelId: newChannel.id,
+            closed: entry.closed,
+            currentStatus: entry.statusLabel,
+          },
+        ];
+      }
+      return prev.map((interaction, i) =>
+        i === idx
+          ? {
+              ...interaction,
+              channels: [newChannel],
+              currentChannelId: newChannel.id,
+              closed: entry.closed,
+              currentStatus: entry.statusLabel,
+            }
+          : interaction
+      );
+    });
+    setActiveInteractionId(id);
+    setNavOpen(true);
+    if (isNewInteraction) setCustomerPanelOpen(true);
+    // Exit full screen — see `handleStartCall`'s identical call for why.
+    setCustomerPanelExitFullScreenSignal((n) => n + 1);
+  };
+
   /* "Unassign & Dismiss" — `InteractionNavItem` itself decides which of
      these two applies (based on how many channels the card has open when
      it's clicked), so these just need to implement each half:
@@ -4485,6 +5514,24 @@ export function AgentNextGenPage({
      below), so dismissing from a toggle behaves identically to dismissing
      from the card. */
   const handleDismissInteraction = (id: string) => {
+    // Logs this assignment to Contact History before it's gone — an open
+    // assignment being unassigned/dismissed is exactly the "completed
+    // contact" event this demo has to log one from (see
+    // `buildDismissedContactHistoryEntry`'s own doc comment). Looked up
+    // from `interactions` (not `remaining` below) since that's the one
+    // place the about-to-be-removed interaction's data still exists.
+    // Deliberately does NOT change or invent this assignment's status —
+    // logged as a normal "Resolved" row (see `buildDismissedContactHistoryEntry`),
+    // never a forced "Closed"/read-only one: leaving an assignment (a
+    // LeftNav/UI action) must not itself decide or change that
+    // assignment's own status. `handleDismissChannel` (ending just one
+    // channel of a card that's still otherwise open) does NOT call this —
+    // the interaction as a whole isn't actually over yet, so there's
+    // nothing to log.
+    const dismissed = interactions.find((interaction) => interaction.id === id);
+    if (dismissed) {
+      setDismissedContactHistory((prev) => [buildDismissedContactHistoryEntry(dismissed, clockTick), ...prev]);
+    }
     // Dismissing the active assignment shouldn't strand the agent on an
     // empty dashboard when there's other open work waiting — hand "active"
     // to whichever assignment now sits at the top of the LeftNav list
@@ -4528,6 +5575,97 @@ export function AgentNextGenPage({
     setInteractions((prev) =>
       prev.map((interaction) =>
         interaction.id === interactionId ? { ...interaction, currentChannelId: channelKey } : interaction
+      )
+    );
+  };
+
+  /** Fired by `InteractionComposer`'s Send button — appends the agent's
+   *  typed message to this interaction's `liveMessages` (see that field's
+   *  own doc comment), clears the awaiting-response flag on whichever
+   *  channel is currently open (the agent just replied), then — since
+   *  there's no real backend here for an actual customer to respond from —
+   *  simulates one coming back a couple seconds later: appends a canned
+   *  customer reply and flips that same channel's `awaitingResponse` back
+   *  on. That flag is what feeds `InteractionNavItem.awaitingResponse`
+   *  (both the card-level prop and each channel row's own), so the customer
+   *  "replying" is what puts the red badge on this interaction's nav item —
+   *  exactly the treatment `InteractionNavItem.stories.tsx`'s "Active,
+   *  Awaiting Response" story already documents, not a new visual invented
+   *  for this feature. */
+  const handleSendMessage = (interactionId: string, text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    const agentMessage: TranscriptMessage = {
+      id: `live-${Date.now()}-agent`,
+      sender: "agent",
+      name: `${CURRENT_AGENT_FIRST_NAME} ${CURRENT_AGENT_LAST_NAME}`,
+      initials: initialsFor(`${CURRENT_AGENT_FIRST_NAME} ${CURRENT_AGENT_LAST_NAME}`),
+      timestamp: new Date().toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }),
+      text: trimmed,
+    };
+
+    const applyToCurrentChannel = (
+      interaction: ActiveInteraction,
+      message: TranscriptMessage,
+      awaitingResponse: boolean
+    ): ActiveInteraction => {
+      const currentKey =
+        interaction.currentChannelId ??
+        (interaction.channels[interaction.channels.length - 1]
+          ? interaction.channels[interaction.channels.length - 1].id ?? interaction.channels[interaction.channels.length - 1].type
+          : undefined);
+      return {
+        ...interaction,
+        liveMessages: [...(interaction.liveMessages ?? []), message],
+        channels: interaction.channels.map((c) =>
+          (c.id ?? c.type) === currentKey ? { ...c, awaitingResponse } : c
+        ),
+      };
+    };
+
+    setInteractions((prev) =>
+      prev.map((interaction) =>
+        interaction.id === interactionId ? applyToCurrentChannel(interaction, agentMessage, false) : interaction
+      )
+    );
+
+    // Simulated customer reply — canned text, not a real conversation
+    // engine. "Customer"/"C" here are placeholders: `InteractionTranscript`
+    // already swaps every customer-sender message's name/initials for this
+    // interaction's real customer at render time (see its own doc comment),
+    // so this reads correctly without needing the real name threaded
+    // through here too.
+    window.setTimeout(() => {
+      const customerMessage: TranscriptMessage = {
+        id: `live-${Date.now()}-customer`,
+        sender: "customer",
+        name: "Customer",
+        initials: "C",
+        timestamp: new Date().toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }),
+        text: CUSTOMER_AUTO_REPLY_POOL[Math.floor(Math.random() * CUSTOMER_AUTO_REPLY_POOL.length)],
+      };
+      setInteractions((prev) =>
+        prev.map((interaction) =>
+          interaction.id === interactionId ? applyToCurrentChannel(interaction, customerMessage, true) : interaction
+        )
+      );
+    }, 2500);
+  };
+
+  /** Fired by `InteractionTranscript`'s `onCurrentStatusChange` — the agent
+   *  changed the CURRENT session's status via the status popover (a plain
+   *  pick, or confirming "Close"). Writes it onto `ActiveInteraction.
+   *  currentStatus` (see that field's own doc comment for why it has to
+   *  live here rather than purely in `InteractionTranscript`'s own state) —
+   *  read back by `buildDismissedContactHistoryEntry` when this interaction
+   *  is later dismissed, so the logged Contact History row reflects
+   *  whatever status was actually last assigned instead of always
+   *  "Resolved". */
+  const handleInteractionStatusChange = (interactionId: string, status: string) => {
+    setInteractions((prev) =>
+      prev.map((interaction) =>
+        interaction.id === interactionId ? { ...interaction, currentStatus: status } : interaction
       )
     );
   };
@@ -5025,25 +6163,23 @@ export function AgentNextGenPage({
           <PanelPinButton
             pinned={pinnedKeys[key]}
             onToggle={() => setPinnedKeys((prev) => ({ ...prev, [key]: !prev[key] }))}
-            // Notifications must always stay pinned — see `disabled` below
-            // — so its tooltip explains why rather than offering an
-            // "Unpin" action this instance won't actually perform.
-            pinnedLabel={key === "notif" ? "Notifications can't be unpinned" : `Unpin ${label}`}
+            pinnedLabel={`Unpin ${label}`}
             unpinnedLabel={`Pin ${label}`}
-            // Notifications is the one app that should never be reachable
-            // ONLY through "View All Apps" — always pinned, un-toggleable.
-            // `disabled` (not just leaving `onToggle` a no-op) also blocks
-            // keyboard/screen-reader activation, and skipping the `className`
-            // override below (next comment) lets `PanelPinButton`'s own
-            // disabled-state styling show through instead of being
-            // clobbered by the pinned-row override.
-            disabled={key === "notif"}
-            // Only override the icon/className when PINNED (and not the
-            // disabled Notifications row) — unpinned rows pass neither
-            // prop, so they fall straight through to `PanelPinButton`'s own
-            // untouched default rendering (plain gray outline Pin, no
-            // rotation since `pinned` is false), exact same as before this
-            // change. Pinned rows get a custom solid blue pin
+            // Notifications used to be forced pinned here (`disabled` +
+            // hardcoded `pinnedLabel` explaining why) — per explicit
+            // request it's unpinnable like every other app now. Unpinning
+            // it just stops rendering `NotificationsBell` in the header
+            // (same `showHeaderIcon` gate every other key already goes
+            // through, see that loop below) — it doesn't lose the count
+            // itself, which reappears as a badge on "View All Apps" instead
+            // (see that button's own `badge` prop below), so an unread
+            // notification is never silently unreachable.
+            //
+            // Only override the icon/className when PINNED — unpinned rows
+            // pass neither prop, so they fall straight through to
+            // `PanelPinButton`'s own untouched default rendering (plain gray
+            // outline Pin, no rotation since `pinned` is false), exact same
+            // as before this change. Pinned rows get a custom solid blue pin
             // (`fill-lyra-fg-active-strong` + matching `text-*`, same
             // "filled + colored icon" idiom `FavoriteButton`'s star already
             // uses) instead of the default's plain 45°-rotated outline Pin.
@@ -5051,18 +6187,13 @@ export function AgentNextGenPage({
             // "selected button background" treatment — not wanted here,
             // just the icon itself should read as filled/blue — so
             // `className` overrides that back to transparent (twMerge drops
-            // the conflicting `bg-*`), also only when pinned. Excluded for
-            // the disabled Notifications row too — its hardcoded blue
-            // `text-*`/`fill-*` wouldn't respect `PanelPinButton`'s own
-            // `disabled:text-lyra-fg-disabled`, so it falls through to the
-            // default Pin glyph instead, which (via lucide's `currentColor`
-            // stroke/fill) properly inherits that muted disabled color.
+            // the conflicting `bg-*`), also only when pinned.
             icon={
-              pinnedKeys[key] && key !== "notif" ? (
+              pinnedKeys[key] ? (
                 <Pin className="h-4 w-4 rotate-45 fill-lyra-fg-active-strong text-lyra-fg-active-strong" strokeWidth={1.5} />
               ) : undefined
             }
-            className={pinnedKeys[key] && key !== "notif" ? "bg-transparent hover:bg-lyra-state-hover" : undefined}
+            className={pinnedKeys[key] ? "bg-transparent hover:bg-lyra-state-hover" : undefined}
           />
         </span>
       ),
@@ -5397,6 +6528,17 @@ export function AgentNextGenPage({
                   // reproduced directly rather than passed as a `variant` prop.
                   className="h-11 w-11 rounded-lyra-sm border border-lyra-border-default bg-lyra-bg-control text-lyra-fg-action hover:bg-lyra-state-hover active:bg-lyra-state-pressed data-[state=open]:bg-lyra-state-hover"
                   onOpenChange={setAppsMenuOpen}
+                  // Notifications is unpinnable now (see the `PanelPinButton`
+                  // row above) — once it's unpinned (or responsively
+                  // auto-hidden, `showHeaderIcon` covers both), its own
+                  // `NotificationsBell` badge disappears from the header
+                  // along with it. Surface the same unread count here
+                  // instead, so an unread notification never goes
+                  // completely invisible just because its icon is tucked
+                  // away — only shown while the header ISN'T already
+                  // showing that count itself, to avoid the same number
+                  // appearing on two icons at once.
+                  badge={!showHeaderIcon("notif") ? notifications.filter((n) => !n.read).length : undefined}
                 />
               </span>
             </Tooltip>
@@ -5473,19 +6615,69 @@ export function AgentNextGenPage({
               {sortAssignments(interactions, assignmentSort).map((interaction) => {
                 const mostRecentId = interaction.channels[interaction.channels.length - 1]?.id;
                 const currentId = interaction.currentChannelId ?? mostRecentId;
-                const channels: InteractionChannel[] = interaction.channels.map((c) => ({
-                  id: c.id,
-                  type: c.type,
-                  elapsed: formatElapsedTime(clockTick - c.startTick),
-                  preview: c.preview,
-                  current: c.id === currentId,
-                  // Read straight off the tracked channel (see
-                  // TrackedChannel.awaitingResponse's own doc comment) —
-                  // not derived from `type` — so a freshly-started outbound
-                  // channel never renders red just for being SMS/chat/
-                  // email/WhatsApp instead of voice.
-                  awaitingResponse: c.awaitingResponse ?? false,
-                }));
+                const channels: InteractionChannel[] = interaction.channels.map((c) => {
+                  // Identifies this specific channel's own Outcome popover —
+                  // `c.id ?? c.type` is the same fallback `InteractionChannel
+                  // .id`'s own doc comment establishes for "no id supplied,
+                  // type alone is unique enough on this card"; prefixing the
+                  // interaction id keeps it unique across DIFFERENT cards
+                  // too, since `outcomeDraftKey` is one shared piece of
+                  // state for the whole left nav (only one popover open at
+                  // a time), not scoped per-card.
+                  const outcomeKey = `${interaction.id}:${c.id ?? c.type}`;
+                  return {
+                    id: c.id,
+                    type: c.type,
+                    elapsed: formatElapsedTime(clockTick - c.startTick),
+                    preview: c.preview,
+                    current: c.id === currentId,
+                    // Read straight off the tracked channel (see
+                    // TrackedChannel.awaitingResponse's own doc comment) —
+                    // not derived from `type` — so a freshly-started outbound
+                    // channel never renders red just for being SMS/chat/
+                    // email/WhatsApp instead of voice.
+                    awaitingResponse: c.awaitingResponse ?? false,
+                    // A closed (reopened-from-history) interaction is
+                    // read-only — no per-channel kebab, so there's no way to
+                    // Unassign & Dismiss/Consult/Transfer/change Outcome on a
+                    // conversation that's already over. See
+                    // `ActiveInteraction.closed`'s own doc comment.
+                    removable: interaction.closed ? false : undefined,
+                    // Wires "Outcome" to a real popover (see
+                    // `ChannelOutcomeConfig`'s own doc comment,
+                    // channel-row.tsx) — harmless to always pass even on a
+                    // closed/read-only card, since `showMenu={removable !==
+                    // false}` already hides the whole button (and this along
+                    // with it) there.
+                    outcome: {
+                      open: outcomeDraftKey === outcomeKey,
+                      onOpenChange: (open: boolean) => handleOutcomeOpenChange(outcomeKey, open),
+                      // Same options list AND same underlying value as the
+                      // session-status pill's own dropdown
+                      // (`TranscriptSessionSeparator`, fed by
+                      // `interaction.currentStatus`/`handleInteractionStatusChange`
+                      // — rule #29) — not a separate `outcomeDraft` field
+                      // like Tags/Disposition/Summary, so changing status
+                      // from either surface changes it in both, per explicit
+                      // request. Same `?? "Resolved"` fallback
+                      // `buildDismissedContactHistoryEntry` already uses for
+                      // this same field.
+                      resolutionOptions: TRANSCRIPT_SESSION_STATUS_OPTIONS,
+                      resolution: interaction.currentStatus ?? "Resolved",
+                      onResolutionChange: (value: string) => handleInteractionStatusChange(interaction.id, value),
+                      tagOptions: OUTCOME_TAG_OPTIONS,
+                      selectedTags: outcomeDraft.tags,
+                      onTagsChange: (tags: string[]) => setOutcomeDraft((d) => ({ ...d, tags })),
+                      dispositionOptions: OUTCOME_DISPOSITION_OPTIONS,
+                      dispositionCode: outcomeDraft.dispositionCode,
+                      onDispositionChange: (value: string) => setOutcomeDraft((d) => ({ ...d, dispositionCode: value })),
+                      summary: outcomeDraft.summary,
+                      onSummaryChange: (value: string) => setOutcomeDraft((d) => ({ ...d, summary: value })),
+                      onSave: handleOutcomeSave,
+                      onCancel: handleOutcomeCancel,
+                    } satisfies ChannelOutcomeConfig,
+                  };
+                });
                 const earliestStart = Math.min(...interaction.channels.map((c) => c.startTick));
                 return (
                   <InteractionNavItem
@@ -5676,6 +6868,10 @@ export function AgentNextGenPage({
                                       if (activeInteraction.channels.length > 1) handleDismissChannel(activeInteraction.id, c);
                                       else handleDismissInteraction(activeInteraction.id);
                                     }}
+                                    // Closed (reopened-from-history) interaction —
+                                    // read-only, no kebab here either. See
+                                    // `ActiveInteraction.closed`'s own doc comment.
+                                    showMenu={!activeInteraction.closed}
                                   />
                                 );
                               })}
@@ -5731,15 +6927,51 @@ export function AgentNextGenPage({
                       docked interior panel" flex-row shape as the Desk
                       dashboard's own right-docked InteriorPanel below. */}
                   <div className="relative flex flex-1 overflow-hidden">
-                    <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
+                    <div
+                      className="flex flex-1 flex-col min-w-0 overflow-hidden"
+                      // Closes the Customer Information panel on a click
+                      // anywhere in this column (banner, transcript, hover
+                      // toolbars, the composer's input/buttons — plain event
+                      // bubbling, no per-child wiring needed) — but only
+                      // while that panel is actually floating OVER this
+                      // content instead of docked beside it
+                      // (`customerPanelIsOverlay`, reported by
+                      // `InteriorPanel`'s `onOverlayModeChange`). A
+                      // side-by-side docked panel isn't overlapping
+                      // anything, so clicking here shouldn't dismiss it —
+                      // same reasoning a real scrim-backed modal only
+                      // dismisses on an outside click when it's actually
+                      // covering something.
+                      onClick={() => {
+                        if (customerPanelOpen && customerPanelIsOverlay) setCustomerPanelOpen(false);
+                      }}
+                    >
+                      {/* Reopened-from-history, closed interaction — read-only
+                          notice. See `ActiveInteraction.closed`'s own doc
+                          comment for the full picture (also drives hiding
+                          `InteractionComposer` below and every channel's
+                          kebab, both in this column and in the LeftNav
+                          card/ChannelToggleGroup above). */}
+                      {activeInteraction.closed && (
+                        <div className="shrink-0 px-6 pt-4">
+                          <InlineNotification variant="info">
+                            You are viewing a closed interaction.
+                          </InlineNotification>
+                        </div>
+                      )}
                       <InteractionTranscript
                         channelType={activeChannelType}
                         customerName={activeInteraction.customerName}
                         recordId={activeInteraction.recordId}
                         skillLabel={activeChannel?.preview}
                         isFreshLaunch={!!activeInteraction.startedFresh}
+                        liveMessages={activeInteraction.liveMessages ?? []}
+                        currentStatus={activeInteraction.currentStatus}
+                        onCurrentStatusChange={(status) => handleInteractionStatusChange(activeInteraction.id, status)}
                       />
-                      <InteractionComposer />
+                      {!activeInteraction.closed && (
+                        <InteractionComposer onSend={(text) => handleSendMessage(activeInteraction.id, text)} />
+                      )}
                     </div>
                     {showPanelToggle && (
                       <CustomerInformationInteriorPanel
@@ -5751,6 +6983,7 @@ export function AgentNextGenPage({
                         width={customerPanelWidth}
                         onWidthChange={setCustomerPanelWidth}
                         exitFullScreenSignal={customerPanelExitFullScreenSignal}
+                        onOverlayModeChange={setCustomerPanelIsOverlay}
                       />
                     )}
                   </div>
@@ -5828,8 +7061,16 @@ export function AgentNextGenPage({
                         applies on selection, driven by the controlled
                         `selectedId`/`onSelect` pair kept in sync with the
                         panel state. */}
+                    {/* No `mt-6` here — this is the first row in the
+                        dashboard body, and the scroll wrapper around
+                        `.lyra-container-grid-wrap` already supplies its
+                        own top spacing (`py-6` a few lines up), so an
+                        extra `mt-6` on top of that just doubled the gap
+                        between the tab bar and this row. The rows below
+                        (`ContactHistoryCard`, the summary cards) keep
+                        their own `mt-6` — they still need spacing from
+                        whatever row sits above THEM. */}
                     <DashboardQueue
-                      className="mt-6"
                       items={latestContacts.map((contact) => ({
                         id: contact.id,
                         name: contact.name,
@@ -5852,7 +7093,11 @@ export function AgentNextGenPage({
                         it depended on are left in place rather than deleted. */}
 
                     <div className="mt-6">
-                      <ContactHistoryCard onRedial={handleRedial} />
+                      <ContactHistoryCard
+                        onRedial={handleRedial}
+                        onReopen={handleReopenContactHistoryEntry}
+                        historyByRange={contactHistoryByRange}
+                      />
                     </div>
 
                     {/* ── Summary cards ──
